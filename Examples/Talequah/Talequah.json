@@ -39,5 +39,13 @@
         "precip": "RAINRATE",
         "latname": "latitude",
         "longname": "longitude"
+    },
+    "COMPUTE": {
+        "engine": "auto",
+        "nworkers": "auto",
+        "blockfiles": "auto",
+        "gpu_chunk": "auto",
+        "gpu_delta": 0.001,
+        "prefetch": "auto"
     }
 }

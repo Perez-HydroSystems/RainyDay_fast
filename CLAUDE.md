@@ -36,6 +36,25 @@ small-VRAM GPUs — CONUS needs ~64-128 on an 8 GB card, see CUDA section below)
 thread reads the next block(s) while the GPU works — overlaps I/O with compute, ~1.5×
 on the CUDA scan, bit-identical output; default 0 for the CPU engines).
 
+**JSON `COMPUTE` block (preferred over env vars for reproducibility).** The parameter
+file may carry an optional `"COMPUTE"` block; every field is optional and `"auto"`
+(or a missing field/block) triggers machine auto-detection:
+```json
+"COMPUTE": {"engine": "auto", "nworkers": "auto", "blockfiles": "auto",
+            "gpu_chunk": "auto", "gpu_delta": 0.001, "prefetch": "auto"}
+```
+`RainyDay.resolve_compute_config` (called before the scan dispatch, irregular domains
+only) resolves each field with precedence **env var > JSON value > auto**, then injects
+the result into the `RAINYDAY_*` env vars the engine code already reads (so nothing
+downstream changed), and prints the resolved config. Auto-detection: engine by
+availability (`fork`+≥4 cores → `batchfft_mp`, else CUDA → `batchcuda`, else
+`batchfft`), with graceful fallback + warning if a requested engine is unavailable
+(e.g. `batchfft_mp` on Windows → `batchcuda`); `nworkers`/`blockfiles` sized from CPU
+count + free RAM (workers capped at 8 — single-disk saturation); `gpu_chunk` sized from
+free VRAM. `gpu_delta` is a tolerance (not machine-auto). Keep shared JSONs portable by
+leaving `"auto"`; pin values only for machine-specific reproducibility. JSON has no
+comments — the fields above are documented here, not inline.
+
 Key functions, all in `Source/RainyDay_utilities_Py3/RainyDay_functions.py`:
 - `catalogFFT_precompute` — one-time: kernel FFT + domain-validity map. The
   "full storm footprint inside domain" rule (`footprint=ones`, `>= sum-0.5`) is

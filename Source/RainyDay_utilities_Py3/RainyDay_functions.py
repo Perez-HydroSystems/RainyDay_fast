@@ -22,6 +22,12 @@
 #==============================================================================
 #%%                                               
 import os
+# Disable CuPy's CUB/cuTENSOR accelerators before cupy is ever imported (the
+# batchcuda engine imports it lazily). CUB compiles reductions (argmax/max) with
+# nvcc, which needs an MSVC host compiler (cl.exe) absent on this Windows box, so
+# argmax would raise NVCCException; the empty value forces the NVRTC path. Set only
+# if the user hasn't chosen accelerators themselves (e.g. on Linux with a working nvcc).
+os.environ.setdefault('CUPY_ACCELERATORS', '')
 import sys
 import numpy as np
 import scipy as sp
@@ -585,6 +591,160 @@ def build_windowed_block(rainblock, context, nwindow, domainmask):
         windowed[1:] = csum[nwindow:nwindow - 1 + nb] - csum[0:nb - 1]
     windowed *= np.nan_to_num(domainmask).astype(np.float32)
     return windowed, full[-(nwindow - 1):].copy()
+
+
+# ---------------------------------------------------------------------------
+# Execution-config resolution for the storm-catalog scan.
+#
+# The JSON parameter file may carry an optional "COMPUTE" block, e.g.
+#     "COMPUTE": {"engine": "auto", "nworkers": "auto", "blockfiles": "auto",
+#                 "gpu_chunk": "auto", "gpu_delta": 1e-3, "prefetch": "auto"}
+# Every field is optional; "auto" (or a missing field / missing block) triggers
+# machine auto-detection. Precedence per field: environment variable > JSON value
+# > auto. resolve_compute_config() is the single entry point used by RainyDay_Py3;
+# it injects the resolved values into the RAINYDAY_* env vars the engine code reads,
+# so nothing downstream needs to change. Irregular domains only (batched engines).
+# ---------------------------------------------------------------------------
+
+def _free_ram_gb():
+    try:
+        import psutil
+        return psutil.virtual_memory().available / 1e9
+    except Exception:
+        return None                       # unknown (psutil missing) -> generous default
+
+def _free_vram_bytes():
+    try:
+        os.environ.setdefault('CUPY_ACCELERATORS', '')
+        import cupy
+        free, _ = cupy.cuda.runtime.memGetInfo()
+        return free
+    except Exception:
+        return None
+
+def _fork_available():
+    try:
+        import multiprocessing as mp
+        return 'fork' in mp.get_all_start_methods()
+    except Exception:
+        return False
+
+def _cuda_available():
+    try:
+        import importlib
+        if importlib.util.find_spec('cupy') is None:
+            return False
+        os.environ.setdefault('CUPY_ACCELERATORS', '')
+        import cupy
+        return cupy.cuda.runtime.getDeviceCount() > 0
+    except Exception:
+        return False
+
+def _auto_engine(ncores):
+    # batchfft_mp (parallel CPU) is fastest where it can run, but it needs the 'fork'
+    # start method (this script has no __main__ guard, so spawn would re-run it). Fall
+    # back to the CUDA GPU engine, then to single-process batchfft.
+    if _fork_available() and (ncores or 1) >= 4:
+        return 'batchfft_mp'
+    if _cuda_available():
+        return 'batchcuda'
+    return 'batchfft'
+
+def _validate_engine(engine, ncores):
+    if engine == 'batchfft_mp' and not _fork_available():
+        alt = 'batchcuda' if _cuda_available() else 'batchfft'
+        return alt, "engine 'batchfft_mp' needs the 'fork' start method (unavailable here) -> using '" + alt + "'"
+    if engine == 'batchcuda' and not _cuda_available():
+        alt = 'batchfft_mp' if _fork_available() else 'batchfft'
+        return alt, "engine 'batchcuda' needs CuPy + a CUDA device (unavailable here) -> using '" + alt + "'"
+    return engine, None
+
+def _auto_workers_blocks(engine, ncores, free_ram, steps_per_file, H, W):
+    def block_gb(B):
+        return B * steps_per_file * H * W * (4 + 8) / 1e9   # float32 raw + float64 cumsum
+    budget = (0.6 * free_ram) if free_ram else 1e9          # unknown RAM -> effectively uncapped
+    if engine == 'batchfft_mp':
+        nw = min(max(1, (ncores or 2) - 2), 8)              # single disk saturates ~8 readers (measured)
+        while nw > 1 and block_gb(1) * nw > budget:
+            nw -= 1
+        B = 16
+        while B > 1 and block_gb(B) * nw > budget:
+            B //= 2
+        return nw, max(1, B)
+    nw = min(max(1, (ncores or 2) - 2), 8)                  # informational for single-process engines
+    B = 16
+    while B > 1 and block_gb(B) > budget:
+        B //= 2
+    return nw, max(1, B)
+
+def _auto_gpu_chunk(H, W):
+    free = _free_vram_bytes()
+    if not free:
+        return 64
+    per_ts = 6 * H * W * 4                 # ~working set per timestep (measured ~33 MB at CONUS scale)
+    return max(8, min(256, int(0.30 * free / max(1, per_ts))))
+
+def _resolve_knob(env_name, json_val, auto_val):
+    """Precedence: existing env var > JSON value (unless 'auto') > auto_val. Injects the
+    chosen value into the env so downstream engine code reads it. auto_val=None leaves
+    it unset (the engine keeps its own per-call default). Returns (value_str, source)."""
+    if env_name in os.environ:
+        return os.environ[env_name], 'env'
+    if json_val is not None and str(json_val).strip().lower() != 'auto':
+        os.environ[env_name] = str(json_val)
+        return str(json_val), 'JSON'
+    if auto_val is not None:
+        os.environ[env_name] = str(auto_val)
+        return str(auto_val), 'auto'
+    return None, 'default'
+
+def resolve_compute_config(compute, domainshape, steps_per_file, nwindow, verbose=True):
+    """
+    Resolve the catalog-scan execution config from the JSON 'COMPUTE' block, environment
+    variables, and machine auto-detection (precedence: env > JSON > auto). Sets the
+    RAINYDAY_* env vars the engine code reads and returns the chosen engine string.
+    Auto-sizing uses CPU count + free RAM (workers, blockfiles) and free VRAM (gpu_chunk)
+    so a user need not know their machine's limits. See the block comment above.
+    """
+    compute = compute or {}
+    H, W = int(domainshape[0]), int(domainshape[1])
+    ncores = os.cpu_count() or 2
+    free_ram = _free_ram_gb()
+
+    env_engine = os.environ.get('RAINYDAY_CATALOG_ENGINE')
+    json_engine = compute.get('engine')
+    if env_engine:
+        engine, esrc = env_engine, 'env'
+    elif json_engine and str(json_engine).strip().lower() != 'auto':
+        engine, esrc = str(json_engine), 'JSON'
+    else:
+        engine, esrc = _auto_engine(ncores), 'auto'
+    engine, warn = _validate_engine(engine, ncores)
+    if warn and verbose:
+        print('  [compute] ' + warn)
+        esrc += '->fallback'
+
+    nworkers_auto, blockfiles_auto = _auto_workers_blocks(engine, ncores, free_ram, steps_per_file, H, W)
+    bf, bf_src = _resolve_knob('RAINYDAY_BLOCKFILES', compute.get('blockfiles'), blockfiles_auto)
+    nw, nw_src = _resolve_knob('RAINYDAY_NWORKERS', compute.get('nworkers'),
+                               nworkers_auto if engine == 'batchfft_mp' else None)
+    gc, gc_src = _resolve_knob('RAINYDAY_GPU_CHUNK', compute.get('gpu_chunk'),
+                               _auto_gpu_chunk(H, W) if engine == 'batchcuda' else None)
+    gd, gd_src = _resolve_knob('RAINYDAY_GPU_DELTA', compute.get('gpu_delta'), '1e-3')
+    pf, pf_src = _resolve_knob('RAINYDAY_SCAN_PREFETCH', compute.get('prefetch'), None)
+
+    if verbose:
+        msg = 'Compute config: engine=' + engine + ' (' + esrc + '), blockfiles=' + str(bf) + ' (' + bf_src + ')'
+        if engine == 'batchfft_mp':
+            msg += ', nworkers=' + str(nw) + ' (' + nw_src + ')'
+        if engine == 'batchcuda':
+            msg += ', gpu_chunk=' + str(gc) + ' (' + gc_src + ')'
+            msg += ', prefetch=' + (pf if pf else '2') + ' (' + (pf_src if pf else 'auto') + ')'
+        if engine in ('batchtf', 'batchcuda'):
+            msg += ', gpu_delta=' + str(gd) + ' (' + gd_src + ')'
+        ramtxt = '{0:.0f} GB free RAM'.format(free_ram) if free_ram else 'RAM unknown (no psutil)'
+        print(msg + '  [' + str(ncores) + ' cores, ' + ramtxt + ']')
+    return engine
 
 
 def _iter_read_blocks(files, blockfiles, variables, idxes, dropvars, calendar,

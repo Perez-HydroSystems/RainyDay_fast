@@ -17,7 +17,17 @@
     "FREQANALYSIS": "false",
     "NREALIZATIONS": 20,
     "EXCLUDESTORMS": "none",
-    "EXCLUDEMONTHS": [1,2,3,4,5,6,10,11,12],
+    "EXCLUDEMONTHS": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        10,
+        11,
+        12
+    ],
     "INCLUDEYEARS": "2002",
     "TRANSPOSITION": "uniform",
     "RESAMPLING": "poisson",
@@ -39,5 +49,13 @@
         "precip": "RAINRATE",
         "latname": "latitude",
         "longname": "longitude"
+    },
+    "COMPUTE": {
+        "engine": "auto",
+        "nworkers": "auto",
+        "blockfiles": "auto",
+        "gpu_chunk": "auto",
+        "gpu_delta": 0.001,
+        "prefetch": "auto"
     }
 }

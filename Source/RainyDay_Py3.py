@@ -71,6 +71,10 @@ tracemalloc.start()
 #                   float rounding can shift near-tied storm windows by ±1-2 timesteps
 #   'batchcuda'   : CuPy/cuFFT GPU FFT (NVIDIA); like 'batchtf' but keeps the FFT algorithm.
 #                   Both GPU engines go through the exact CPU confirm (bit-identical catalog).
+# The engine and its performance knobs (nworkers/blockfiles/gpu_chunk/gpu_delta/prefetch)
+# are resolved per-run from the optional JSON "COMPUTE" block, env vars, and machine
+# auto-detection (precedence env > JSON > auto) in RainyDay.resolve_compute_config; the
+# line below is only the pre-resolution fallback for env-based use.
 catalog_engine = os.environ.get('RAINYDAY_CATALOG_ENGINE', 'batchfft')
 
 #%%
@@ -1171,6 +1175,15 @@ if CreateCatalog:
     # with batched FFTs (catalog_scan_files). catmax/cattime/catx/caty get the
     # same bookkeeping as the per-timestep loop below, which is then skipped by
     # emptying filerange.
+    # Resolve the execution config (engine + performance knobs) from the optional
+    # JSON "COMPUTE" block, environment variables, and machine auto-detection —
+    # precedence env > JSON > auto. This picks/validates the engine and injects the
+    # resolved RAINYDAY_* knobs the code below reads. Irregular domains only.
+    if domain_type=='irregular':
+        catalog_engine=RainyDay.resolve_compute_config(cardinfo.get('COMPUTE',{}),
+            domainmask.shape, max(1,int(round(24*60/rainprop.timeres))),
+            int(catduration*60/rainprop.timeres))
+
     if catalog_engine!='fft_perstep' and domain_type=='irregular':
         print("storm catalog engine: "+catalog_engine)
         nwindow=int(catduration*60/rainprop.timeres)
