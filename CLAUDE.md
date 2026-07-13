@@ -53,7 +53,9 @@ availability (`fork`+≥4 cores → `batchfft_mp`, else CUDA → `batchcuda`, el
 count + free RAM (workers capped at 8 — single-disk saturation); `gpu_chunk` sized from
 free VRAM. `gpu_delta` is a tolerance (not machine-auto). Keep shared JSONs portable by
 leaving `"auto"`; pin values only for machine-specific reproducibility. JSON has no
-comments — the fields above are documented here, not inline.
+comments, so the block may carry `_`-prefixed note keys (e.g. `"_engine_options": "..."`)
+to document the choices inline — the resolver reads only the known keys via `.get()` and
+ignores anything starting with `_` (see `Examples/Talequah/Talequah.json`).
 
 Key functions, all in `Source/RainyDay_utilities_Py3/RainyDay_functions.py`:
 - `catalogFFT_precompute` — one-time: kernel FFT + domain-validity map. The

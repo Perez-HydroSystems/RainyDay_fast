@@ -41,11 +41,18 @@
         "longname": "longitude"
     },
     "COMPUTE": {
+        "_note": "Optional. All fields default to 'auto' (machine auto-detection). Precedence: environment variable > this file > auto. Keys starting with '_' are ignored.",
+        "_engine_options": "auto, batchcuda, batchfft_mp, batchfft, or fft_perstep",
         "engine": "auto",
+        "_nworkers_note": "auto, or an integer (batchfft_mp only)",
         "nworkers": "auto",
+        "_blockfiles_note": "auto, or an integer (files per FFT batch; lower if RAM-limited)",
         "blockfiles": "auto",
+        "_gpu_chunk_note": "auto, or an integer (batchcuda timesteps per GPU FFT; lower if VRAM-limited)",
         "gpu_chunk": "auto",
+        "_gpu_delta_note": "GPU error-screen tolerance for the exact-confirm (leave at 0.001)",
         "gpu_delta": 0.001,
+        "_prefetch_note": "auto, or an integer reader-thread lookahead (batchcuda; 0 disables)",
         "prefetch": "auto"
     }
 }
