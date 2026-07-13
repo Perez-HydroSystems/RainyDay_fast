@@ -355,6 +355,633 @@ def catalogNumba_irregular(temparray, trimmask, xlen, ylen, xloop, yloop,
 
     return rmax, ymax, xmax
 
+import numpy as np
+from scipy.signal import fftconvolve, oaconvolve
+
+def catalogFFT_irregular(temparray, trimmask):
+    """
+    CPU version using FFT-based convolution (cross-correlation equivalent to manual loop).
+
+    Parameters:
+    -----------
+    temparray : np.ndarray
+        2D rainfall field (float32 or float64)
+    trimmask : np.ndarray
+        2D storm mask kernel (float32 or float64)
+
+    Returns:
+    --------
+    rmax : float
+        Maximum value of convolution
+    ymax, xmax : int
+        Location (row, col) of maximum alignment
+    """
+    # Clean NaNs
+    temparray_clean = np.nan_to_num(temparray)
+    trimmask_clean = np.nan_to_num(trimmask)
+
+    # Flip kernel so fftconvolve behaves like cross-correlation
+    trimmask_clean = trimmask_clean[::-1, ::-1]  # flip both axes
+    result = fftconvolve(temparray_clean, trimmask_clean, mode='valid')
+
+    # result = oaconvolve(temparray_clean, trimmask_clean, mode='valid')
+
+    # Find max value and its location
+    rmax = np.max(result)
+    ymax, xmax = np.unravel_index(np.argmax(result), result.shape)
+
+    return float(rmax), int(ymax), int(xmax)
+
+## New version preserving domain mask. Added by GP Jan-29 2026
+
+from scipy.signal import fftconvolve
+import numpy as np
+
+def catalogFFT_irregular_domainaware(temparray, trimmask, domainmask):
+    """
+    Finds the storm placement that produces the largest total rainfall,
+    while ensuring the storm lies fully inside the domain.
+
+    Equivalent to a manual sliding-window dot product/cross-correlation.
+    Assumes temparray was already multiplied by domainmask upstream.
+    """
+
+    # --- Clean inputs ---
+    rain = np.ascontiguousarray(np.nan_to_num(temparray), dtype=np.float32)
+    storm = np.ascontiguousarray(np.nan_to_num(trimmask), dtype=np.float32)
+    domain = np.ascontiguousarray((domainmask > 0).astype(np.float32))
+
+    # --- Flip kernels so fftconvolve behaves like cross-correlation ---
+    storm_flip = storm[::-1, ::-1]
+
+    # storm_footprint = (storm > 1e-6).astype(np.float32)
+    storm_footprint = np.ones_like(storm, dtype=np.float32)
+    footprint_flip = storm_footprint[::-1, ::-1]
+
+    # Total rainfall captured by storm at each valid placement
+    storm_rainfall_map = fftconvolve(
+        rain,
+        storm_flip,
+        mode="valid"
+    )
+
+    # Count how many storm-footprint pixels fall inside the domain
+    inside_count_map = fftconvolve(
+        domain,
+        footprint_flip,
+        mode="valid"
+    )
+
+    required_pixels = storm_footprint.sum()
+
+    # Invalidate placements where the full storm footprint is not inside domain
+    storm_rainfall_map[
+        inside_count_map < (required_pixels - 0.5)
+    ] = -np.inf
+
+    # Maximum rainfall and location
+    flat_idx = np.argmax(storm_rainfall_map)
+    rmax = storm_rainfall_map.flat[flat_idx]
+
+    ymax, xmax = np.unravel_index(
+        flat_idx,
+        storm_rainfall_map.shape
+    )
+
+    return float(rmax), int(ymax), int(xmax)
+
+
+## Batched FFT catalog engine. Added by GP Jul-12 2026
+# Same math as catalogFFT_irregular_domainaware, but everything that is
+# constant across timesteps (kernel FFT, domain-validity map) is computed once,
+# and whole blocks of timesteps are processed with batched multithreaded FFTs.
+
+import scipy.fft as spfft
+
+def catalogFFT_precompute(trimmask, domainmask):
+    """
+    One-time precomputation for the batched catalog engine.
+
+    Returns a dict with:
+      kfft      : rfft2 of the flipped storm kernel, padded to the FFT shape
+      valid     : boolean map of placements whose full rectangular footprint
+                  lies inside the transposition domain
+      fshape    : padded FFT shape (scipy next_fast_len, matching fftconvolve)
+      maskshape : (maskheight, maskwidth)
+      outshape  : shape of the 'valid'-mode correlation output
+    """
+    storm = np.ascontiguousarray(np.nan_to_num(trimmask), dtype=np.float32)
+    domain = np.ascontiguousarray((np.nan_to_num(domainmask) > 0).astype(np.float32))
+    mh, mw = storm.shape
+    fh, fw = domain.shape
+    outh, outw = fh - mh + 1, fw - mw + 1
+    fshape = (spfft.next_fast_len(fh + mh - 1, True),
+              spfft.next_fast_len(fw + mw - 1, True))
+    kfft = spfft.rfft2(storm[::-1, ::-1].copy(), fshape)
+
+    # placements where the full (rectangular) storm footprint is inside the domain,
+    # identical to the inside_count_map test in catalogFFT_irregular_domainaware
+    footprint = np.ones_like(storm)
+    inside_count = fftconvolve(domain, footprint[::-1, ::-1], mode='valid')
+    valid = inside_count >= (footprint.sum() - 0.5)
+
+    return dict(kfft=kfft, valid=valid, fshape=fshape, storm=storm,
+                maskshape=(mh, mw), outshape=(outh, outw))
+
+
+def catalogFFT_batch(rainblock, pre, workers=-1, chunksize=256):
+    """
+    Batched equivalent of catalogFFT_irregular_domainaware.
+
+    rainblock : (T,H,W) float32 windowed rainfall sums, NaN-free and already
+                multiplied by the domain mask
+    pre       : dict from catalogFFT_precompute
+
+    Returns rmax[T], ymax[T], xmax[T] — the best placement per timestep.
+    chunksize bounds peak memory (the padded complex spectra of one chunk).
+    """
+    mh, mw = pre['maskshape']
+    outh, outw = pre['outshape']
+    fshape = pre['fshape']
+    kfft = pre['kfft']
+    invalid = ~pre['valid']
+
+    nt = rainblock.shape[0]
+    rmax = np.empty(nt, dtype=np.float64)
+    ymax = np.empty(nt, dtype=np.int64)
+    xmax = np.empty(nt, dtype=np.int64)
+
+    for s in range(0, nt, chunksize):
+        blk = rainblock[s:s + chunksize]
+        spec = spfft.rfft2(blk, fshape, axes=(-2, -1), workers=workers)
+        spec *= kfft[None, :, :]
+        conv = spfft.irfft2(spec, fshape, axes=(-2, -1), workers=workers)
+        conv = conv[:, mh - 1:mh - 1 + outh, mw - 1:mw - 1 + outw]
+        conv[:, invalid] = -np.inf
+        flat = conv.reshape(conv.shape[0], -1)
+        idx = np.argmax(flat, axis=1)
+        rmax[s:s + chunksize] = flat[np.arange(flat.shape[0]), idx]
+        ymax[s:s + chunksize], xmax[s:s + chunksize] = np.unravel_index(idx, (outh, outw))
+
+    return rmax, ymax, xmax
+
+
+def read_file_block(bfiles, variables, idxes, dropvars, calendar, time_units, timestep):
+    """
+    Read a block of chronologically sorted files and return the fields on a
+    contiguous time grid (missing timesteps zero-filled), so that count-based
+    rolling windows equal the original time-based window logic.
+
+    Returns (rainblock (B,H,W) float32, blocktimes (B,) datetime64[m],
+    present (B,) bool, fileidx (B,) int64 — index into bfiles per timestep,
+    -1 for zero-filled gap steps). Negative and NaN values are set to 0,
+    matching inrain[inrain<0]=nan + nansum in the per-timestep path.
+    """
+    rains = []
+    times = []
+    for f in bfiles:
+        r, t = readnetcdf(f, variables, idxes, dropvars=dropvars,
+                          calendar=calendar, time_units=time_units)
+        r = np.asarray(r, dtype=np.float32)
+        r[~np.isfinite(r)] = 0.
+        r[r < 0.] = 0.
+        rains.append(r)
+        times.append(np.asarray(t, dtype='datetime64[m]'))
+    times_all = np.concatenate(times)
+    rain_all = np.concatenate(rains, axis=0)
+    fileidx_all = np.repeat(np.arange(len(bfiles), dtype=np.int64),
+                            [len(t) for t in times])
+
+    grid_times = np.arange(times_all[0], times_all[-1] + timestep, timestep)
+    if len(grid_times) == len(times_all):
+        present = np.ones(len(times_all), dtype=bool)
+        return rain_all, times_all, present, fileidx_all
+
+    pos = ((times_all - grid_times[0]) / timestep).astype(np.int64)
+    rainblock = np.zeros((len(grid_times),) + rain_all.shape[1:], dtype=np.float32)
+    rainblock[pos] = rain_all
+    present = np.zeros(len(grid_times), dtype=bool)
+    present[pos] = True
+    fileidx = np.full(len(grid_times), -1, dtype=np.int64)
+    fileidx[pos] = fileidx_all
+    return rainblock, grid_times, present, fileidx
+
+
+def build_windowed_block(rainblock, context, nwindow, domainmask):
+    """
+    Rolling nwindow-step rainfall totals for every timestep of a block, via
+    cumulative sums (float64 accumulator to avoid float32 drift).
+
+    context holds the nwindow-1 fields immediately preceding the block on the
+    contiguous grid (zeros where no data exists). Returns (windowed (B,H,W)
+    float32 multiplied by domainmask, new context for the next block).
+    """
+    full = np.concatenate([context, rainblock], axis=0)
+    csum = np.cumsum(full, axis=0, dtype=np.float64)
+    nb = rainblock.shape[0]
+    windowed = np.empty_like(rainblock)
+    windowed[0] = csum[nwindow - 1]
+    if nb > 1:
+        windowed[1:] = csum[nwindow:nwindow - 1 + nb] - csum[0:nb - 1]
+    windowed *= np.nan_to_num(domainmask).astype(np.float32)
+    return windowed, full[-(nwindow - 1):].copy()
+
+
+def _iter_read_blocks(files, blockfiles, variables, idxes, dropvars, calendar,
+                      time_units, timestep, prefetch=0):
+    """
+    Yield (bstart, bfiles, blockrain, blocktimes, present, fileidx) for each block
+    of `blockfiles` consecutive files. With prefetch>0 a daemon thread reads the
+    next block(s) while the caller processes the current one, overlapping file I/O
+    (netCDF reads release the GIL) with the caller's windowing + GPU compute. Block
+    order and contents are identical to a plain sequential read, so scan results are
+    unchanged — only the read latency is hidden. This is the in-process alternative
+    to parallel reader processes (threads can't parallelize the HDF5 reads
+    themselves, but one reader thread does overlap I/O with the GPU); shipping
+    windowed blocks between processes is infeasible (~tens of GB of IPC).
+    """
+    starts = list(range(0, len(files), blockfiles))
+
+    def readblk(bstart):
+        bfiles = files[bstart:bstart + blockfiles]
+        return (bstart, bfiles) + read_file_block(bfiles, variables, idxes,
+                                                  dropvars, calendar, time_units, timestep)
+
+    if prefetch <= 0:
+        for bstart in starts:
+            yield readblk(bstart)
+        return
+
+    import threading
+    try:
+        import queue
+    except ImportError:
+        import Queue as queue
+    q = queue.Queue(maxsize=prefetch)
+    _DONE = object()
+    err = []
+
+    def worker():
+        try:
+            for bstart in starts:
+                q.put(readblk(bstart))
+        except BaseException as e:      # surface read errors to the consumer thread
+            err.append(e)
+        finally:
+            q.put(_DONE)
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    while True:
+        item = q.get()
+        if item is _DONE:
+            break
+        yield item
+    if err:
+        raise err[0]
+
+
+def catalog_scan_files(files, ctxfiles, variables, idxes, dropvars, calendar,
+                       time_units, timestep, nwindow, trimmask, domainmask,
+                       blockfiles=16, verbose=True, engine='batchfft',
+                       return_fileidx=False):
+    """
+    Scan a chronologically sorted list of files with the batched catalog engine
+    and return the best storm placement for every present timestep:
+    (times, rainmax, ycat, xcat), each 1-D and in chronological order.
+    With return_fileidx=True, also returns the index into 'files' that each
+    timestep came from (used by the batchtf exact-confirm selection).
+
+    ctxfiles: files immediately preceding 'files' (may be empty) — read only to
+    seed the rolling window context, no results are emitted for them. Used by
+    the multiprocessing engine so each worker sees the full window history.
+    """
+    fftpre = catalogFFT_precompute(trimmask, domainmask)
+    fh, fw = domainmask.shape
+    context = np.zeros((nwindow - 1, fh, fw), dtype=np.float32)
+    context_endtime = None
+    if len(ctxfiles) > 0:
+        ctxrain, ctxtimes, _, _ = read_file_block(ctxfiles, variables, idxes,
+                                                  dropvars, calendar, time_units, timestep)
+        m = min(nwindow - 1, ctxrain.shape[0])
+        if m > 0:
+            context[nwindow - 1 - m:] = ctxrain[-m:]
+            context_endtime = ctxtimes[-1]
+
+    # Overlap file reads with GPU compute for the CUDA engine: a reader thread
+    # fetches the next block(s) while this thread windows + runs the GPU. Off by
+    # default for the CPU engines (their scipy FFT already interleaves I/O and is
+    # verified bit-identical); override with RAINYDAY_SCAN_PREFETCH.
+    prefetch = int(os.environ.get('RAINYDAY_SCAN_PREFETCH', '2' if engine == 'batchcuda' else '0'))
+
+    all_times, all_rmax, all_y, all_x, all_fidx = [], [], [], [], []
+    for bstart, bfiles, blockrain, blocktimes, present, fileidx in _iter_read_blocks(
+            files, blockfiles, variables, idxes, dropvars, calendar, time_units, timestep, prefetch):
+        if verbose:
+            print('Processing files ' + str(bstart + 1) + '-' + str(bstart + len(bfiles))
+                  + ' out of ' + str(len(files))
+                  + ' (' + "{0:0.0f}".format(100 * (bstart + len(bfiles)) / len(files)) + '%): '
+                  + bfiles[0].split('/')[-1] + ' ...')
+
+        # zero-fill any gap between the previous block and this one so the
+        # rolling window stays aligned with wall-clock time
+        if context_endtime is not None:
+            gapsteps = int((blocktimes[0] - (context_endtime + timestep)) / timestep)
+            if gapsteps < 0:
+                sys.exit("The batched catalog engines need chronologically sorted, non-overlapping input files!")
+            elif gapsteps >= nwindow - 1:
+                context[:] = 0.
+            elif gapsteps > 0:
+                context = np.concatenate([context[gapsteps:],
+                                          np.zeros((gapsteps,) + context.shape[1:], dtype='float32')], axis=0)
+
+        windowed, context = build_windowed_block(blockrain, context, nwindow, domainmask)
+        context_endtime = blocktimes[-1]
+
+        if engine == 'batchtf':
+            rmax_blk, y_blk, x_blk = catalogTF_batch(windowed, fftpre)
+        elif engine == 'batchcuda':
+            rmax_blk, y_blk, x_blk = catalogCUDA_batch(windowed, fftpre)
+        else:
+            rmax_blk, y_blk, x_blk = catalogFFT_batch(windowed, fftpre)
+
+        keep = np.where(present)[0]
+        all_times.append(blocktimes[keep])
+        all_rmax.append(rmax_blk[keep])
+        all_y.append(y_blk[keep])
+        all_x.append(x_blk[keep])
+        all_fidx.append(bstart + fileidx[keep])
+
+    if return_fileidx:
+        return (np.concatenate(all_times), np.concatenate(all_rmax),
+                np.concatenate(all_y), np.concatenate(all_x),
+                np.concatenate(all_fidx))
+    return (np.concatenate(all_times), np.concatenate(all_rmax),
+            np.concatenate(all_y), np.concatenate(all_x))
+
+
+def catalog_scan_worker(task):
+    """Unpacks one catalog_scan_files task tuple; module-level so it can be
+    pickled by ProcessPoolExecutor (macOS spawn/forkserver-safe)."""
+    return catalog_scan_files(*task)
+
+
+def catalogTF_batch(rainblock, pre, chunksize=256):
+    """
+    TensorFlow (Metal GPU) equivalent of catalogFFT_batch. tf.nn.conv2d is a
+    cross-correlation (no kernel flip), i.e. exactly the sliding storm-mask dot
+    product. GPU constants are uploaded once per scan and cached on 'pre'.
+    Requires an environment with tensorflow(-metal), e.g. RainyDay_Env_GPU.
+    """
+    import tensorflow as tf   # local import: only needed for engine 'batchtf'
+    mh, mw = pre['maskshape']
+    outh, outw = pre['outshape']
+    if '_tf' not in pre:
+        pre['_tf'] = (tf.constant(pre['storm'].reshape(mh, mw, 1, 1), dtype=tf.float32),
+                      tf.constant(pre['valid'].reshape(1, outh, outw), dtype=tf.bool))
+    kernel, valid = pre['_tf']
+    neginf = tf.constant(-np.inf, dtype=tf.float32)
+
+    nt = rainblock.shape[0]
+    rmax = np.empty(nt, dtype=np.float64)
+    ymax = np.empty(nt, dtype=np.int64)
+    xmax = np.empty(nt, dtype=np.int64)
+    for s in range(0, nt, chunksize):
+        blk = tf.constant(rainblock[s:s + chunksize, :, :, None], dtype=tf.float32)
+        conv = tf.nn.conv2d(blk, kernel, strides=1, padding='VALID')[:, :, :, 0]
+        conv = tf.where(valid, conv, neginf)
+        flat = tf.reshape(conv, (conv.shape[0], -1))
+        idx = tf.argmax(flat, axis=1).numpy()
+        rmax[s:s + chunksize] = tf.reduce_max(flat, axis=1).numpy()
+        ymax[s:s + chunksize] = idx // outw
+        xmax[s:s + chunksize] = idx % outw
+    return rmax, ymax, xmax
+
+
+def catalogCUDA_batch(rainblock, pre, chunksize=256):
+    """
+    CuPy/cuFFT equivalent of catalogFFT_batch. Unlike catalogTF_batch (direct
+    conv2d, ~30x the arithmetic), this keeps the same rfft2 x conj-kernel-spectrum
+    / irfft2 correlation the CPU engine uses, so it does O(N log N) work on the
+    GPU. GPU constants (kernel spectrum, invalid-placement mask) are uploaded once
+    per scan and cached on 'pre'. Returns numpy rmax/ymax/xmax.
+
+    Requires an environment with CuPy + a working cuFFT (e.g. RainyDay_Env_GPU).
+    Two Windows-specific notes:
+      - CUPY_ACCELERATORS is forced empty so argmax/max compile via NVRTC; the
+        default CUB path invokes nvcc, which needs an MSVC host compiler (cl.exe).
+      - chunksize bounds peak VRAM (~33 MB/timestep at CONUS scale, complex64
+        spectra). Override with RAINYDAY_GPU_CHUNK on small-memory GPUs; on an
+        8 GB card CONUS needs ~64-128 while the default 256 is fine for small
+        domains like Talequah.
+    """
+    os.environ.setdefault('CUPY_ACCELERATORS', '')  # must precede first cupy import
+    import cupy as cp   # local import: only needed for engine 'batchcuda'
+    chunksize = int(os.environ.get('RAINYDAY_GPU_CHUNK', chunksize))
+    mh, mw = pre['maskshape']
+    outh, outw = pre['outshape']
+    fshape = pre['fshape']
+    if '_cuda' not in pre:
+        # kfft is complex64 (scipy rfft2 of a float32 kernel); cupy rfft2 of a
+        # float32 block is also complex64, so the whole pipeline stays single
+        # precision and the spectra are half the size of the complex128 default.
+        pre['_cuda'] = (cp.asarray(pre['kfft']), cp.asarray(~pre['valid']))
+    kfft, invalid = pre['_cuda']
+
+    nt = rainblock.shape[0]
+    rmax = np.empty(nt, dtype=np.float64)
+    ymax = np.empty(nt, dtype=np.int64)
+    xmax = np.empty(nt, dtype=np.int64)
+    for s in range(0, nt, chunksize):
+        blk = cp.asarray(rainblock[s:s + chunksize], dtype=cp.float32)
+        spec = cp.fft.rfft2(blk, s=fshape, axes=(-2, -1))
+        spec *= kfft[None, :, :]
+        conv = cp.fft.irfft2(spec, s=fshape, axes=(-2, -1))
+        conv = conv[:, mh - 1:mh - 1 + outh, mw - 1:mw - 1 + outw]
+        conv[:, invalid] = -cp.inf
+        flat = conv.reshape(conv.shape[0], -1)
+        idx = cp.asnumpy(cp.argmax(flat, axis=1))
+        rmax[s:s + chunksize] = cp.asnumpy(cp.max(flat, axis=1))
+        ymax[s:s + chunksize] = idx // outw
+        xmax[s:s + chunksize] = idx % outw
+        del blk, spec, conv, flat   # let the pool reuse the block's buffers
+    return rmax, ymax, xmax
+
+
+def catalog_select_confirmed(scantimes, scanmax, scany, scanx, scanfidx, files,
+                             nctx, catmax, cattime, catx, caty, catduration,
+                             timestep, timeseparation, variables, idxes,
+                             dropvars, calendar, time_units, nwindow, trimmask,
+                             domainmask, blockfiles=16, delta=1e-3):
+    """
+    Storm-catalog selection for approximate (GPU) scan values that produces a
+    catalog bit-identical to the exact CPU engine ('batchfft').
+
+    GPU values are trusted only as a screen with relative error <= delta. Any
+    timestep whose value comes within delta of the running catalog minimum —
+    which includes every timestep that gets accepted — has its (rainmax,y,x)
+    recomputed with the exact CPU FFT, and the selection restarts. A pass that
+    completes without new recomputes is exact: every decision was either
+    exact-vs-exact (catalog slots only ever hold values from accepted, i.e.
+    exact, timesteps) or a GPU value below the running minimum by more than
+    the error bound, which the exact value therefore is too.
+
+    Fills catmax/cattime/catx/caty in place (they must hold initial values).
+    """
+    nscan = len(scantimes)
+    exact = {}              # scan index -> (rainmax, ycat, xcat), CPU-exact
+    donefiles = set()
+    maxerr = 0.
+    catmax0, cattime0 = catmax.copy(), cattime.copy()
+    catx0, caty0 = catx.copy(), caty.copy()
+
+    for iteration in range(1, 21):
+        wmax, wtime = catmax0.copy(), cattime0.copy()
+        wx, wy = catx0.copy(), caty0.copy()
+        marked = set()
+        for k in range(nscan):
+            if k in exact:
+                rainmax, ycat, xcat = exact[k]
+                isexact = True
+            else:
+                rainmax, ycat, xcat = float(scanmax[k]), int(scany[k]), int(scanx[k])
+                isexact = False
+            minind = np.argmin(wmax)
+            tempmin = wmax[minind]
+            if (not isexact) and rainmax > 0. and rainmax >= tempmin - delta * max(rainmax, tempmin):
+                marked.add(k)
+            # legacy bookkeeping (optimistic where not exact; the pass only
+            # counts when nothing was marked, and then every accepted step
+            # was exact)
+            if rainmax > tempmin:
+                checksep = scantimes[k] - wtime[:, -1]
+                starttime = scantimes[k] - np.timedelta64(int(catduration * 60.), 'm')
+                subtime = np.arange(scantimes[k], starttime, -timestep)[::-1]
+                if (checksep < timeseparation).any():
+                    checkind = np.where(checksep < timeseparation)
+                    if rainmax >= wmax[checkind]:
+                        wmax[checkind] = rainmax
+                        wtime[checkind, :] = subtime
+                        wx[checkind] = xcat
+                        wy[checkind] = ycat
+                else:
+                    wmax[minind] = rainmax
+                    wtime[minind, :] = subtime
+                    wx[minind] = xcat
+                    wy[minind] = ycat
+
+        if len(marked) == 0:
+            catmax[:], cattime[:], catx[:], caty[:] = wmax, wtime, wx, wy
+            print('GPU exact-confirm selection: converged after ' + str(iteration)
+                  + ' pass(es), ' + str(len(donefiles)) + ' file(s) recomputed exactly, '
+                  + 'max GPU-vs-CPU relative error {0:0.2e}'.format(maxerr))
+            return
+
+        # exact recompute, grouped into runs of consecutive source files so
+        # context files are read once per run instead of once per file; every
+        # timestep of a touched file becomes exact (they come for free and
+        # speed up convergence)
+        needfiles = sorted(set(int(scanfidx[k]) for k in marked) - donefiles)
+        if len(needfiles) == 0:
+            sys.exit("exact-confirm selection: marked timesteps remained after recomputing their files — this should not happen")
+        runs = [[needfiles[0], needfiles[0]]]
+        for fi in needfiles[1:]:
+            if fi == runs[-1][1] + 1:
+                runs[-1][1] = fi
+            else:
+                runs.append([fi, fi])
+        for lo, hi in runs:
+            ctxf = files[max(0, lo - nctx):lo]
+            etimes, ermax, ey, ex = catalog_scan_files(files[lo:hi + 1], ctxf, variables,
+                                                       idxes, dropvars, calendar,
+                                                       time_units, timestep, nwindow,
+                                                       trimmask, domainmask,
+                                                       blockfiles, False, 'batchfft')
+            kidx = np.searchsorted(scantimes, etimes)
+            if kidx[-1] >= nscan or not np.array_equal(scantimes[kidx], etimes):
+                sys.exit("exact-confirm selection: recomputed timesteps do not line up with the scan — check the input files")
+            for j, k in enumerate(kidx):
+                k = int(k)
+                if k not in exact:
+                    if ermax[j] > 0.:
+                        err = abs(float(scanmax[k]) - float(ermax[j])) / float(ermax[j])
+                        if err > maxerr:
+                            maxerr = err
+                    exact[k] = (float(ermax[j]), int(ey[j]), int(ex[j]))
+            donefiles.update(range(lo, hi + 1))
+
+    sys.exit("exact-confirm selection did not converge in 20 passes — use catalog engine 'batchfft' instead")
+
+
+# ## New version using TensorFlow (For Macs). Added by GP Jul-7 2025
+# import tensorflow as tf
+# import numpy as np
+
+# def catalogTF_irregular(temparray, trimmask):
+#     """
+#     GPU version of catalogNumba_irregular using TensorFlow with Metal backend.
+
+#     Parameters:
+#     -----------
+#     temparray : np.ndarray
+#         2D rainfall field (float32)
+#     trimmask : np.ndarray
+#         2D storm mask kernel (float32)
+
+#     Returns:
+#     --------
+#     rmax : float
+#         Maximum value of convolution
+#     ymax, xmax : int
+#         Location (row, col) of maximum alignment
+#     """
+
+#     # Step 1: Preprocess input (reshape for TF)
+#     h, w = temparray.shape
+#     mh, mw = trimmask.shape
+#     rain_tf = tf.convert_to_tensor(np.nan_to_num(temparray).reshape(1, h, w, 1), dtype=tf.float32)
+#     mask_tf = tf.convert_to_tensor(trimmask.reshape(mh, mw, 1, 1), dtype=tf.float32)
+
+#     # Step 2: Perform valid 2D convolution
+#     conv_out = tf.nn.conv2d(rain_tf, mask_tf, strides=1, padding='VALID')
+
+#     # Step 3: Extract result
+#     conv_np = conv_out.numpy().squeeze()
+#     rmax = np.max(conv_np)
+#     ymax, xmax = np.unravel_index(np.argmax(conv_np), conv_np.shape)
+
+#     return float(rmax), int(ymax), int(xmax)
+
+
+# ## New version using CUDA (NVIDIA GPUs). Added by GP Jul-7 2025
+# import cupy as cp
+# from cupyx.scipy.signal import convolve2d # Small kernels (masks)
+# from cupyx.scipy.signal import fftconvolve # Large kernels (masks)  
+
+# def catalog_gpu_cupy(temparray_np, trimmask_np):
+#     # Move data to GPU
+#     temparray = cp.asarray(temparray_np, dtype=cp.float32)
+#     trimmask = cp.asarray(trimmask_np, dtype=cp.float32)
+
+#     h, w = temparray.shape
+#     mh, mw = trimmask.shape
+#     yh = h - mh + 1
+#     xw = w - mw + 1
+
+#     # Create output matrix
+#     rainsum = cp.zeros((h, w), dtype=cp.float32)
+
+#     # Slide mask using 2D convolution
+#     valmat = cp.nan_to_num(temparray)
+#     # rainsum[:yh, :xw] = convolve2d(valmat, trimmask[::-1, ::-1], mode='valid')
+#     rainsum[:yh, :xw] = fftconvolve(valmat, trimmask[::-1, ::-1], mode='valid')
+
+#     # Find max
+#     max_val = cp.max(rainsum)
+#     max_idx = cp.argmax(rainsum)
+#     ymax, xmax = cp.unravel_index(max_idx, rainsum.shape)
+
+#     return float(max_val), int(ymax), int(xmax)
 
 # # Note: This version requires xlen and ylen defined in RainyDay_Py3.py defined as follow:
 # # xlen =rainprop.subdimensions[1]-maskwidth
@@ -468,7 +1095,6 @@ def DistributionBuilderFast(intenserain,tempmax,xlen,ylen,checksep):
 @jit(fastmath=True)
 def SSTalt(passrain,sstx,ssty,trimmask,maskheight,maskwidth,intensemean=None,intensestd=None,intensecorr=None,homemean=None,homestd=None,durcheck=False):
     maxmultiplier=1.5
-    
     rainsum=np.zeros((len(sstx)),dtype='float32')
     whichstep=np.zeros((len(sstx)),dtype='int32')
     nreals=len(rainsum)
@@ -493,7 +1119,6 @@ def SSTalt(passrain,sstx,ssty,trimmask,maskheight,maskwidth,intensemean=None,int
     else:
         exprain=passrain
         
-
     for k in range(0,nreals):
         y=int(ssty[k])
         x=int(sstx[k])
@@ -540,6 +1165,7 @@ def SSTalt(passrain,sstx,ssty,trimmask,maskheight,maskwidth,intensemean=None,int
                 whichstep[k]=storestep
             else:
                 rainsum[k]=numba_multimask_calc(passrain,trimmask,y,x,maskheight,maskwidth)*multiplier
+    
     if domean:
         return rainsum,multiout,whichstep
     else:
@@ -1541,14 +2167,13 @@ def check_time(datetime_obj):
 #RainyDay.writecatalog(scenarioname,catrain,catmax,catx,caty,cattime,latrange,lonrange,catalogname,nstorms,catmask,parameterfile,domainmask,timeresolution=rainprop.timeres)   
 def writecatalog(scenarioname, catrain, catmax, catx, caty, cattime, latrange, lonrange, catalogname, gridmask,
                  parameterfile, dmask, nstorms, duration,storm_num,timeresolution=False):
-
+    print(parameterfile)
     with open(parameterfile,'r') as f:
         params = json.loads(f.read())
     # Variable Attributes (time since 1970-01-01 00:00:00.0 in numpys)
     latitudes_units,longitudes_units = 'degrees_north', 'degrees_east'
     rainrate_units,basinrainfall_units = 'mm hr^-1', 'mm'
     times_units, times_calendar = 'minutes since 1970-01-01 00:00.0' , 'gregorian'
-
     # Variable Names
     times_name = 'time'                     ## change here
     latitudes_name,longitudes_name  = 'latitude', 'longitude'
@@ -1560,10 +2185,8 @@ def writecatalog(scenarioname, catrain, catmax, catx, caty, cattime, latrange, l
     else:
         timeresolution = "None"
     catrain[np.isnan(catrain)] = -9999.
-
     history, missing = 'Created ' + str(datetime.now()), '-9999.'
     source = 'RainyDay Storm Catalog for scenario ' + scenarioname + '. See description for JSON file contents.'
-
     data_vars = dict(
                      rain = (("time","latitude", "longitude"),catrain,{'units': rainrate_units, 'long_name': rainrate_name}),
                     # rain = (("time","latitude", "longitude"),catrain[:, ::-1, :],{'units': rainrate_units, 'long_name': rainrate_name}),
@@ -1581,7 +2204,7 @@ def writecatalog(scenarioname, catrain, catmax, catx, caty, cattime, latrange, l
                   latitude =  (("latitude"), latrange.data, {'units': latitudes_units, 'long_name': latitudes_name}),
                   #latitude =  (("latitude"), latrange[::-1].data, {'units': latitudes_units, 'long_name': latitudes_name}),
                   )
-
+    
 
     attrs  = dict(history =history, source =  source, missing = missing, description = str(params),  calendar = times_calendar)
     catalog = xr.Dataset(data_vars = data_vars, coords = coords, attrs = attrs)
@@ -1939,6 +2562,11 @@ def createfilelist(inpath, includeyears, excludemonths):
         except:
             sys.exit("You need to give file names in YYYYMMDD, YYYY-MM-DD or YYYY/MM/DD formats")
         file_year = file_date.year; file_month = file_date.month
+        ## Added by GP to manually exclude Harvey August 2017
+        file_month = file_date.month                # GP
+        if file_year == 2017 and file_month == 8:   # GP
+            continue                                # GP
+
         if includeyears == False:
             if file_month not in excludemonths:
                 new_list.append(file); years.add(file_year)

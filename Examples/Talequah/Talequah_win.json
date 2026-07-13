@@ -1,0 +1,43 @@
+{
+    "MAINPATH": "C:/Users/gpere11/OneDrive - Oklahoma A and M System/Academia/Codes/RainyDay_SST/Testing_RainyDay_GPU/RainyDay/Examples/Talequah/Results",
+    "SCENARIONAME": "Talequah_3days",
+    "RAINPATH": "C:/Test_RainyDay/AORC_2002/AORC.*.preciptemp.nc",
+    "CATALOGNAME": "Talequah_3days.nc",
+    "CREATECATALOG": "true",
+    "DURATION": 72,
+    "DURATIONCORRECTION": "false",
+    "UNCERTAINTY": "false",
+    "NSTORMS": 10,
+    "NYEARS": 500,
+    "CALCTYPE": "pds",
+    "TIMESEPARATION": 24,
+    "DOMAINTYPE": "irregular",
+    "DOMAINSHP": "C:/Users/gpere11/OneDrive - Oklahoma A and M System/Academia/Codes/RainyDay_SST/Testing_RainyDay_GPU/RainyDay/Examples/Talequah/Shapefiles/Talequah_transposition_domain.shp",
+    "DIAGNOSTICPLOTS": "true",
+    "FREQANALYSIS": "false",
+    "NREALIZATIONS": 20,
+    "EXCLUDESTORMS": "none",
+    "EXCLUDEMONTHS": [1,2,3,4,5,6,10,11,12],
+    "INCLUDEYEARS": "2002",
+    "TRANSPOSITION": "uniform",
+    "RESAMPLING": "poisson",
+    "RETURNLEVELS": [
+        2,
+        5,
+        10,
+        25,
+        50,
+        100,
+        166.67,
+        500
+    ],
+    "RETURNTHRESHOLD": 2,
+    "SCENARIOS": "false",
+    "POINTAREA": "watershed",
+    "WATERSHEDSHP": "C:/Users/gpere11/OneDrive - Oklahoma A and M System/Academia/Codes/RainyDay_SST/Testing_RainyDay_GPU/RainyDay/Examples/Talequah/Shapefiles/Talequah_basin.shp",
+    "VARIABLES": {
+        "precip": "RAINRATE",
+        "latname": "latitude",
+        "longname": "longitude"
+    }
+}

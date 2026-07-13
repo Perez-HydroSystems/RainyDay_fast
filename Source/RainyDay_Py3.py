@@ -62,6 +62,17 @@ warnings.filterwarnings("ignore")
 import tracemalloc
 tracemalloc.start()
 
+# Storm-catalog engine for irregular domains (rectangular domains always use catalogNumba):
+#   'batchfft'    : batched multithreaded FFTs over blocks of files (default; verified
+#                   bit-identical to 'fft_perstep' on the Talequah example, see RainyDay/tools)
+#   'batchfft_mp' : 'batchfft' distributed over worker processes (fastest for long records)
+#   'fft_perstep' : original loop, one catalogFFT_irregular_domainaware call per timestep
+#   'batchtf'     : experimental TensorFlow (Metal GPU) convolution; equivalent storms but
+#                   float rounding can shift near-tied storm windows by ±1-2 timesteps
+#   'batchcuda'   : CuPy/cuFFT GPU FFT (NVIDIA); like 'batchtf' but keeps the FFT algorithm.
+#                   Both GPU engines go through the exact CPU confirm (bit-identical catalog).
+catalog_engine = os.environ.get('RAINYDAY_CATALOG_ENGINE', 'batchfft')
+
 #%%
 #==============================================================================
 # RAINFALL CLASS
@@ -1087,6 +1098,7 @@ if CreateCatalog:
         pass
 
 
+
 if catmask.shape!=domainmask.shape:
     sys.exit("Oh dear, 'catmask' and 'domainmask' aren't the same size!")
 
@@ -1153,6 +1165,94 @@ if CreateCatalog:
     filerange=range(0,len(flist))
     idxes = RainyDay.find_indices(flist[0],inarea,variables)
     proc_start = time.time()
+
+    # Batched catalog engines (see RainyDay/tools): the constant kernel FFT and
+    # domain-validity map are computed once, and blocks of files are processed
+    # with batched FFTs (catalog_scan_files). catmax/cattime/catx/caty get the
+    # same bookkeeping as the per-timestep loop below, which is then skipped by
+    # emptying filerange.
+    if catalog_engine!='fft_perstep' and domain_type=='irregular':
+        print("storm catalog engine: "+catalog_engine)
+        nwindow=int(catduration*60/rainprop.timeres)
+        blockfiles=int(os.environ.get('RAINYDAY_BLOCKFILES','16'))
+
+        # Benchmark hook (no effect unless RAINYDAY_DUMP_SCANINPUTS is set): pickle
+        # the scan inputs and exit, so tools/bench_mp_scan.py can time batchfft_mp
+        # via a spawn pool on Windows (where 'fork' is unavailable) without a
+        # __main__ guard around this whole script. See RainyDay/tools.
+        if os.environ.get('RAINYDAY_DUMP_SCANINPUTS'):
+            import pickle
+            _,firsttime=RainyDay.readnetcdf(flist[0],variables,idxes,dropvars=droplist,calendar=calendar,time_units=time_units)
+            nctx=int(np.ceil(float(nwindow-1)/max(1,len(firsttime))))
+            with open(os.environ['RAINYDAY_DUMP_SCANINPUTS'],'wb') as _f:
+                pickle.dump(dict(flist=flist,variables=variables,idxes=idxes,droplist=droplist,
+                                 calendar=calendar,time_units=time_units,timestep=timestep,
+                                 nwindow=nwindow,trimmask=trimmask,domainmask=domainmask,
+                                 blockfiles=blockfiles,nctx=nctx),_f)
+            sys.exit('scan inputs dumped to '+os.environ['RAINYDAY_DUMP_SCANINPUTS'])
+
+        if catalog_engine=='batchfft_mp':
+            import concurrent.futures
+            import multiprocessing as mp
+            nworkers=int(os.environ.get('RAINYDAY_NWORKERS',str(max(1,(os.cpu_count() or 2)//2))))
+            # enough preceding files to cover the rolling window of each chunk
+            _,firsttime=RainyDay.readnetcdf(flist[0],variables,idxes,dropvars=droplist,calendar=calendar,time_units=time_units)
+            nctx=int(np.ceil(float(nwindow-1)/max(1,len(firsttime))))
+            bounds=np.linspace(0,len(flist),nworkers+1).astype(int)
+            tasks=[]
+            for c in range(nworkers):
+                lo,hi=bounds[c],bounds[c+1]
+                if lo<hi:
+                    tasks.append((flist[lo:hi],flist[max(0,lo-nctx):lo],variables,idxes,droplist,calendar,time_units,timestep,nwindow,trimmask,domainmask,blockfiles,False,'batchfft'))
+            print("scanning "+str(len(flist))+" files with "+str(len(tasks))+" workers...")
+            # 'fork' is required here: this script has no __main__ guard, and the
+            # 'spawn'/'forkserver' start methods re-import (i.e. re-run) it in
+            # every worker. The workers only use numpy/scipy/netCDF4, which are
+            # fork-safe on macOS.
+            with concurrent.futures.ProcessPoolExecutor(max_workers=nworkers,mp_context=mp.get_context('fork')) as executor:
+                parts=list(executor.map(RainyDay.catalog_scan_worker,tasks))
+            scantimes=np.concatenate([p[0] for p in parts])
+            scanmax=np.concatenate([p[1] for p in parts])
+            scany=np.concatenate([p[2] for p in parts])
+            scanx=np.concatenate([p[3] for p in parts])
+        elif catalog_engine in ('batchtf','batchcuda'):
+            scantimes,scanmax,scany,scanx,scanfidx=RainyDay.catalog_scan_files(flist,[],variables,idxes,droplist,calendar,time_units,timestep,nwindow,trimmask,domainmask,blockfiles,True,catalog_engine,return_fileidx=True)
+        else:   # 'batchfft'
+            scantimes,scanmax,scany,scanx=RainyDay.catalog_scan_files(flist,[],variables,idxes,droplist,calendar,time_units,timestep,nwindow,trimmask,domainmask,blockfiles,True,catalog_engine)
+
+        if catalog_engine in ('batchtf','batchcuda'):
+            # GPU values are only a screen: every timestep whose accept/merge
+            # decision Metal's float rounding could flip is recomputed with the
+            # exact CPU FFT inside catalog_select_confirmed, so the catalog is
+            # bit-identical to the 'batchfft'/'fft_perstep' engines
+            gpudelta=float(os.environ.get('RAINYDAY_GPU_DELTA','1e-3'))
+            _,firsttime=RainyDay.readnetcdf(flist[0],variables,idxes,dropvars=droplist,calendar=calendar,time_units=time_units)
+            nctx=int(np.ceil(float(nwindow-1)/max(1,len(firsttime))))
+            RainyDay.catalog_select_confirmed(scantimes,scanmax,scany,scanx,scanfidx,flist,nctx,catmax,cattime,catx,caty,catduration,timestep,timeseparation,variables,idxes,droplist,calendar,time_units,nwindow,trimmask,domainmask,blockfiles,gpudelta)
+        else:
+            # identical catalog bookkeeping as in the per-timestep loop below
+            for k in range(len(scantimes)):
+                rainmax=scanmax[k]; ycat=int(scany[k]); xcat=int(scanx[k])
+                starttime=scantimes[k]-np.timedelta64(int(catduration*60.),'m')
+                subtime=np.arange(scantimes[k],starttime,-timestep)[::-1]
+                minind=np.argmin(catmax)
+                tempmin=catmax[minind]
+                if rainmax>tempmin:
+                    checksep=scantimes[k]-cattime[:,-1]
+                    if (checksep<timeseparation).any():
+                        checkind=np.where(checksep<timeseparation)
+                        if rainmax>=catmax[checkind]:
+                            catmax[checkind]=rainmax
+                            cattime[checkind,:]=subtime
+                            catx[checkind]=xcat
+                            caty[checkind]=ycat
+                    else:
+                        catmax[minind]   =rainmax
+                        cattime[minind,:]=subtime
+                        catx[minind]     =xcat
+                        caty[minind]     =ycat
+        filerange=range(0)   # batched engine done; skip the per-timestep loop below
+
     for i in filerange:
         #startpc = time.time()
         infile=flist[i]
@@ -1170,6 +1270,7 @@ if CreateCatalog:
         print('Processing file '+str(i+1)+' out of '+str(len(flist))+' ('+"{0:0.0f}".format(100*(i+1)/len(flist))+'%): '+infile.split('/')[-1])
         
         # THIS FIRST PART BUILDS THE STORM CATALOG
+        start = time.time()
         for k in np.arange(0,len(intime)):     
             starttime=intime[k]-np.timedelta64(int(catduration*60.),'m')
             raintime[-1]=intime[k]
@@ -1184,10 +1285,19 @@ if CreateCatalog:
             if domain_type=='irregular':
                 temparray = temparray * domainmask
                 # startct = time.time()
-                # start = time.time()
-                rainmax,ycat,xcat=RainyDay.catalogNumba_irregular(temparray,trimmask,xlen,ylen,xloop,yloop,maskheight,maskwidth,rainsum,stride=catalogstride)
-                # print(f"✅ Time elapsed: {time.time() - start:.2f} seconds")
+                
+                # Parallelized CPU version of catalogNumba for irregular domains
+                # rainmax,ycat,xcat=RainyDay.catalogNumba_irregular(temparray,trimmask,xlen,ylen,xloop,yloop,maskheight,maskwidth,rainsum,stride=catalogstride)
+                # CPU version using convolution for irregular domains
+                # rainmax,ycat,xcat=RainyDay.catalogFFT_irregular(temparray, trimmask)
+                rainmax,ycat,xcat=RainyDay.catalogFFT_irregular_domainaware(temparray, trimmask, domainmask)
+                # Parallelized GPU version of catalogTF for irregular domains - For Macs
+                # rainmax,ycat,xcat=RainyDay.catalogTF_irregular(temparray,trimmask)
+                # Parallelized GPU version of catalogNumba for irregular domains - For CUDA NVIDIA GPUs
+                # rainmax,ycat,xcat=RainyDay.catalog_gpu_cupy(temparray,trimmask)
+                
                 # rainmax,ycat,xcat=RainyDay.catalogNumba_irregular(temparray,trimmask,xlen,ylen,maskheight,maskwidth,rainsum,domainmask,stride=catalogstride)
+
             else:
                 rainmax,ycat,xcat=RainyDay.catalogNumba(temparray,trimmask,xlen,ylen,xloop,yloop,maskheight,maskwidth,rainsum,stride=catalogstride)
                 
@@ -1214,10 +1324,12 @@ if CreateCatalog:
             
             rainarray[0:-1,:]=rainarray[1:int(catduration*60/rainprop.timeres),:]
             raintime[0:-1]=raintime[1:int(catduration*60/rainprop.timeres)] 
+        # print(f"✅ Time elapsed: {time.time() - start:.4f} seconds")
         #endpc = time.time()
         #print('overall time:', endpc-startpc)
-    # proc_end = time.time()
-    # print(f"catalog timer: {(proc_end-proc_start)/60.:0.2f} minutes")
+    # scan-only timer: excludes the storm re-read/write part below, which is the
+    # same for every catalog engine
+    print(f"catalog scan timer: {(time.time()-proc_start)/60.:0.2f} minutes")
 #%%
     if np.count_nonzero(catmax) < nstorms:
         zero_ind = np.where(catmax ==0)[0][0]
@@ -1274,6 +1386,7 @@ if CreateCatalog:
             else:
                 cind = match[0]
                 catrain[k, :] = stm_rain[cind, :]
+                
             # cind = np.where(stm_time == current_datetime)[0][0]
             # catrain[k,:] = stm_rain[cind,:]
             current_datetime += rainprop.timeres
@@ -1299,7 +1412,12 @@ if CreateCatalog:
                                               cattime,latrange,lonrange,\
                                                   storm_name,catmask,parameterfile,domainmask,\
                                                      nstorms,catduration,storm_num=int(i),timeresolution=rainprop.timeres)
-    end = time.time()   
+            else:
+                # previously this branch silently swallowed the error, leaving
+                # storms missing from the catalog with no indication why
+                print("ERROR: failed to write "+storm_name+": "+repr(exc))
+                raise
+    end = time.time()
     print(f"catalog timer: {(end-proc_start)/60.:0.2f} minutes")
 
     stormlist = glob.glob(fullpath+'/StormCatalog/'+catalogname + '_storm_'+'*' + '.nc')
@@ -1508,7 +1626,8 @@ if domain_type=='rectangular':
 else:
     invalues=np.vstack([caty, catx])
     
-
+# Comment the three below lines to conduct realizations with a low number of events. 
+# This because gaussian_kde needs a relatevely large number of events.
 stmkernel=stats.gaussian_kde(invalues,bw_method=RainyDay.my_kde_bandwidth)
 pltkernel=np.multiply(np.reshape(stmkernel(kpositions), kx.shape),domainmask[0:rainprop.subdimensions[0]-maskheight+1,0:rainprop.subdimensions[1]-maskwidth+1])
 pltkernel=pltkernel/np.nansum(pltkernel)
@@ -1523,6 +1642,9 @@ if transpotype=='uniform':
     cumkernel=tempmask
     cumkernel=np.expand_dims(cumkernel,2)        # do we need this???
 elif transpotype=='nonuniform' or rescaletype!='none':
+    # stmkernel=stats.gaussian_kde(invalues,bw_method=RainyDay.my_kde_bandwidth)
+    # pltkernel=np.multiply(np.reshape(stmkernel(kpositions), kx.shape),domainmask[0:rainprop.subdimensions[0]-maskheight+1,0:rainprop.subdimensions[1]-maskwidth+1])
+    # pltkernel=pltkernel/np.nansum(pltkernel)
     smoothsig=5
     # the following is an important fix. All prior kernel-based results are conceptually incorrect-DBW 1/24/2018. But this hasn't been thoroughly vetted!
     if areatype=="pointlist":
@@ -1668,11 +1790,18 @@ if DoDiagnostics:
                 ynew_trans = latrange[caty[i]]+(maskheight/2)*rainprop.spatialres[1]
                 # Read the original geometries
                 original_geometries = list(Reader(wsmaskshp).geometries())
-                # Compute the centroid of the first geometry
-                original_centroid = original_geometries[0].centroid
-                # Compute translation distances
-                Delta_x = xnew_trans - original_centroid.x
-                Delta_y = ynew_trans - original_centroid.y
+                # Use the trimmed-mask window anchor rather than the polygon centroid.
+                # The catalog placement is based on the trimmed raster mask window, so the
+                # diagnostic overlay should use the same reference point.
+                xorig_trans = lonrange[xmin]+(maskwidth/2)*rainprop.spatialres[0]
+                yorig_trans = latrange[ymin]+(maskheight/2)*rainprop.spatialres[1]
+                Delta_x = xnew_trans - xorig_trans
+                Delta_y = ynew_trans - yorig_trans
+                # % Compute the centroid of the first geometry
+                # % original_centroid = original_geometries[0].centroid
+                # % Compute translation distances
+                # % Delta_x = xnew_trans - original_centroid.x
+                # % Delta_y = ynew_trans - original_centroid.y
                 # Apply translation to all geometries
                 transposed_geometries = [translate(geom, xoff=Delta_x, yoff=Delta_y) for geom in original_geometries]
                 # Create a new ShapelyFeature for the transposed geometries
@@ -1707,7 +1836,7 @@ if DoDiagnostics:
                         +u'\N{DEGREE SIGN}'+','+"{:6.1f}".format(np.array(plotlon[catx[i]]
                         +(maskwidth/2+maskwidth%2)*rainprop.spatialres[0]))
                         +u'\N{DEGREE SIGN}')
-
+            plt.tight_layout()
             plt.savefig(diagpath+'Storm'+str(i+1)+'_'+str(plottime[-1]).split('T')[0]+'.png',dpi=250)
             plt.close()     
         
@@ -1782,7 +1911,7 @@ if DoDiagnostics:
         
     if domain_type.lower()=="irregular" and os.path.isfile(domainshp):
         ax.add_feature(domain_feature,edgecolor="black",facecolor="None",zorder = 3)
-    xplot_kernel.plot_kernel.plot(x="lon",y="lat",cmap='Reds',cbar_kwargs={'orientation':orientation,'label':"Probability of storm occurrence [-]"})
+    xplot_kernel.plot_kernel.plot(x="lon",y="lat",cmap='Reds',cbar_kwargs={'orientation':'horizontal','label':"Probability of storm occurrence [-]"})
     #xplot_kernel.pltkernel.plot(x="lon",y="lat",cmap='Reds',cbar_kwargs={'orientation':orientation,'label':"Probability of storm occurrence [-]"})
         
     # plt.scatter(lonrange[catx]+(maskwidth/2)*rainprop.spatialres[0],latrange[caty]-(maskheight/2)*rainprop.spatialres[1],s=catmax/2,facecolors='k',edgecolors='none',alpha=0.75)
@@ -1796,7 +1925,7 @@ if DoDiagnostics:
             plt.scatter(lonrange[catx[k]]+rainprop.spatialres[0]/2,latrange[caty[k]]- rainprop.spatialres[1]/2,s=catmax[k]*1,facecolors='gray',edgecolors='k',alpha=0.5)
   
 
-    ax.add_feature(states_provinces)
+    # ax.add_feature(states_provinces)
     ax.set_xticks(np.linspace(outerextent[0],outerextent[1],2))
     lon_formatter = cticker.LongitudeFormatter()
     ax.xaxis.set_major_formatter(lon_formatter)
@@ -1807,8 +1936,9 @@ if DoDiagnostics:
     ax.set(xlabel=None,ylabel=None)
     ax.yaxis.set_major_formatter(lat_formatter)
     
-    ax.set_title('Prob. of storm occurrence from\n'+catalogname.split('/')[-1]+'\nNOTE: The prob. map may not extend to lower/right edges. That is not a mistake!')
+    # ax.set_title('Prob. of storm occurrence from\n'+catalogname.split('/')[-1]+'\nNOTE: The prob. map may not extend to lower/right edges. That is not a mistake!')
     #ax.axes.set_title(xlabel=None)
+
     plt.tight_layout()
     plt.savefig(diagpath+'ProbabilityOfStorms.png',dpi=250)
     # plt.show()
@@ -1939,7 +2069,7 @@ if FreqAnalysis:
     # resampling counts options:
     if samplingtype.lower()=='poisson':
         #lrate=len(catmax)/nyears*FrequencySens 
-        lrate=len(catmax)/nyears        
+        lrate=len(catmax)/nyears      
         ncounts=np.random.poisson(lrate,(nsimulations,nrealizations))
         #ncounts[ncounts==0]=1
         if calctype.lower()=='npyear' and lrate<nperyear:   
@@ -2017,7 +2147,8 @@ if FreqAnalysis:
         whichy=np.zeros((whichstorms.shape[0],whichstorms.shape[1],whichstorms.shape[2],1),dtype='int32')  
         whichrain=np.zeros((whichstorms.shape[0],whichstorms.shape[1],whichstorms.shape[2],1),dtype='float32')
         whichstep=np.zeros((whichstorms.shape[0],whichstorms.shape[1],whichstorms.shape[2],1),dtype='int32')
-        
+    
+    
     if durcorrection:
         whichtimeind=np.zeros((whichstorms.shape),dtype='float32')
     
@@ -2029,17 +2160,21 @@ if FreqAnalysis:
     # Trim all edges of the domain mask to ensure storm centroids stay within bounds.
     # This avoids placing storm centers too close to the edges where the mask footprint (e.g., 5x5)
     # would exceed the domain and cause indexing issues or partial storms.
+
     if transpotype=='uniform' and domain_type=='irregular':
         if maskheight > 1:
-            domainmask[:maskheight, :] = 0.    # Trim northern edge
-            domainmask[-maskheight:,:]= 0.      # Trim southern edge   
+            # domainmask[:maskheight, :] = 0.    # Trim northern edge
+            domainmask[-maskheight:,:]= 0.      # Trim southern edge
         if maskwidth > 1:
-            domainmask[:, :maskwidth] = 0.     # Trim western edge
+            # domainmask[:, :maskwidth] = 0.     # Trim western edge
             domainmask[:, -maskwidth:] = 0.    # Trim eastern edge
 
         xmask,ymask=np.meshgrid(np.arange(0,domainmask.shape[1],1),np.arange(0,domainmask.shape[0],1))
         xmask=xmask[np.equal(domainmask,True)]
         ymask=ymask[np.equal(domainmask,True)]
+    
+    # if np.sum(domainmask)==0:
+    #     sys.exit("It seems the transposition domain is relatively small with respect to the basin mask. Stcohastic Storms cannot be created")
 
     if rescaletype=='stochastic' or rescaletype=='deterministic' or rescaletype=='dimensionless':
         whichmultiplier=np.empty_like(whichrain)
@@ -2188,7 +2323,17 @@ if FreqAnalysis:
                 
                 if domain_type.lower()=='irregular':
                     maxpass = maxpass * domainmask
-                    maxtemp,tempy,tempx=RainyDay.catalogNumba_irregular(maxpass,trimmask,xlen,ylen,xloop,yloop,maskheight,maskwidth,rainsum,stride=catalogstride)
+                    # Parallelized CPU version of catalogNumba for irregular domains
+                    # maxtemp,tempy,tempx=RainyDay.catalogNumba_irregular(maxpass,trimmask,xlen,ylen,xloop,yloop,maskheight,maskwidth,rainsum,stride=catalogstride)
+                    # CPU version using convolution for irregular domains
+                    # maxtemp,tempy,tempx=RainyDay.catalogFFT_irregular(maxpass,trimmask)
+                    maxtemp,tempy,tempx=RainyDay.catalogFFT_irregular_domainaware(maxpass,trimmask,domainmask)
+
+                    # Parallelized GPU version of catalogTF for irregular domains - For Macs
+                    # maxtemp,tempy,tempx=RainyDay.catalogTF_irregular(maxpass,trimmask)
+                    # Parallelized GPU version of catalogNumba for irregular domains - For CUDA NVIDIA GPUs
+                    # maxtemp,tempy,tempx=RainyDay.catalog_gpu_cupy(maxpass,trimmask)
+
                 else:
                     maxtemp,tempy,tempx=RainyDay.catalogNumba(maxpass,trimmask,xlen,ylen,xloop,yloop,maskheight,maskwidth,rainsum,stride=catalogstride)
      
@@ -2216,6 +2361,7 @@ if FreqAnalysis:
             tempy=np.empty((len(rndloc)),dtype='int32')
             for pt in np.arange(0,whichx.shape[3]):
                 whichx[whichstorms==i,pt],whichy[whichstorms==i,pt]=RainyDay.numbakernel_fast(rndloc,cumkernel[:,:,pt],tempx,tempy,rainprop.subdimensions[1])
+                
 
         if transpotype=='uniform' and domain_type=='irregular':
             rndloc=np.random.randint(0,np.sum(np.equal(domainmask,True)),np.sum(whichstorms==i))
@@ -2274,6 +2420,7 @@ if FreqAnalysis:
                 elif areatype.lower()!='pointlist' and areatype.lower()!='point' and rescaletype=='none':
                     temprain,whichstep[whichstorms==i,pt]=RainyDay.SSTalt(passrain,whichx[whichstorms==i,pt],whichy[whichstorms==i,pt],trimmask,maskheight,maskwidth,durcheck=durcorrection)                
                     whichrain[whichstorms==i,pt]=temprain*rainprop.timeres/60./mnorm 
+
                 elif areatype.lower()=='pointlist':
                     if rescaletype=='deterministic':
                         homemeanpt=intensemean[yind_list[pt],xind_list[pt]]
@@ -2829,7 +2976,7 @@ if FreqAnalysis:
                 raintime=np.concatenate([raintime,padtime])
             
             howmanystorms=np.sum(whichstorms==i)        # how many transposed storms are due to parent storm i?
-            print(howmanystorms)
+            # print(howmanystorms)
 
             if howmanystorms>0:
                 stormindex=np.zeros_like(whichstorms) 

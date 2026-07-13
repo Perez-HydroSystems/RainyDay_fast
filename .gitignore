@@ -1,0 +1,22 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# macOS / editor cruft
+.DS_Store
+*~
+.ipynb_checkpoints/
+
+# RainyDay run outputs — regenerable, and can be very large (single storm .nc
+# files exceed GitHub's 100 MB limit). Verification references under tools/ are
+# kept deliberately and are NOT under a Results/ dir.
+**/Results/
+
+# Benchmark / run logs
+tools/logs/
+
+# Reference storm catalogs (verification ground-truth). Large .nc fields, and
+# regenerable via the harness (run fft_perstep once + tools/make_conus_shapefile.py).
+# Kept out of the repo to stay lean.
+tools/conus_catalogs/
+tools/reference_catalog_fftperstep/
