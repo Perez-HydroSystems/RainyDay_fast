@@ -2197,27 +2197,54 @@ if FreqAnalysis:
     if durcorrection:
         whichtimeind=np.zeros((whichstorms.shape),dtype='float32')
     
-    # For irregular domains under uniform transposition, we mask out border cells to avoid placing storm windows
-    # where the mask would exceed domain bounds. However, for single-pixel masks (maskheight = maskwidth = 1),
-    # this masking is unnecessary and would incorrectly remove valid storm locations.
-    # Therefore, we apply border masking only if maskheight or maskwidth is greater than 1.
-
-    # Trim all edges of the domain mask to ensure storm centroids stay within bounds.
-    # This avoids placing storm centers too close to the edges where the mask footprint (e.g., 5x5)
-    # would exceed the domain and cause indexing issues or partial storms.
-
+    # ------------------------------------------------------------------------------------------------
+    # GP 2026-10-16: OLD transposition locations (kept commented for reference).
+    # Only the anchor cell (corner of the basin bounding box) had to be inside the domain; the last
+    # maskheight rows and maskwidth columns of the ARRAY were zeroed so the box stays inside the array,
+    # but NOT inside the domain polygon. On irregular domains (e.g. SE Texas coast, Galveston Bay cut out)
+    # transposed basins could hang up to ~55% outside the domain and still collect rain there, which is
+    # inconsistent with the storm-catalog search (whole box inside the domain, catalogFFT_irregular_domainaware).
+    # It also modified domainmask in place, which changed the later sub-duration window search.
+    # For SE Texas this made the 100-yr depth increase with basin area (Harvey's core lies on the domain edge).
+    #
+    # # For irregular domains under uniform transposition, we mask out border cells to avoid placing storm windows
+    # # where the mask would exceed domain bounds. However, for single-pixel masks (maskheight = maskwidth = 1),
+    # # this masking is unnecessary and would incorrectly remove valid storm locations.
+    # # Therefore, we apply border masking only if maskheight or maskwidth is greater than 1.
+    #
+    # # Trim all edges of the domain mask to ensure storm centroids stay within bounds.
+    # # This avoids placing storm centers too close to the edges where the mask footprint (e.g., 5x5)
+    # # would exceed the domain and cause indexing issues or partial storms.
+    #
+    # if transpotype=='uniform' and domain_type=='irregular':
+    #     if maskheight > 1:
+    #         # domainmask[:maskheight, :] = 0.    # Trim northern edge
+    #         domainmask[-maskheight:,:]= 0.      # Trim southern edge
+    #     if maskwidth > 1:
+    #         # domainmask[:, :maskwidth] = 0.     # Trim western edge
+    #         domainmask[:, -maskwidth:] = 0.    # Trim eastern edge
+    #
+    #     xmask,ymask=np.meshgrid(np.arange(0,domainmask.shape[1],1),np.arange(0,domainmask.shape[0],1))
+    #     xmask=xmask[np.equal(domainmask,True)]
+    #     ymask=ymask[np.equal(domainmask,True)]
+    # ------------------------------------------------------------------------------------------------
+    # GP 2026-10-16: NEW transposition locations = same rule as the storm-catalog search.
+    # A location (anchor = corner of the basin bounding box) is valid only if the WHOLE maskheight x maskwidth
+    # box lies inside the domain. domainmask is no longer modified. For single-pixel masks (1x1) this is
+    # simply every domain cell.
     if transpotype=='uniform' and domain_type=='irregular':
-        if maskheight > 1:
-            # domainmask[:maskheight, :] = 0.    # Trim northern edge
-            domainmask[-maskheight:,:]= 0.      # Trim southern edge
-        if maskwidth > 1:
-            # domainmask[:, :maskwidth] = 0.     # Trim western edge
-            domainmask[:, -maskwidth:] = 0.    # Trim eastern edge
+        from scipy.signal import fftconvolve
+        insidecount=fftconvolve((domainmask>0).astype('float32'),np.ones((maskheight,maskwidth),dtype='float32'),mode='valid')
+        validanchor=np.zeros(domainmask.shape,dtype=bool)
+        validanchor[:insidecount.shape[0],:insidecount.shape[1]]=insidecount>(maskheight*maskwidth-0.5)
+        if np.sum(validanchor)==0:
+            sys.exit("No transposition location fits the whole watershed inside the domain. Check DOMAINSHP and WATERSHEDSHP.")
 
         xmask,ymask=np.meshgrid(np.arange(0,domainmask.shape[1],1),np.arange(0,domainmask.shape[0],1))
-        xmask=xmask[np.equal(domainmask,True)]
-        ymask=ymask[np.equal(domainmask,True)]
-    
+        xmask=xmask[validanchor]
+        ymask=ymask[validanchor]
+        print("transposition locations: "+str(len(xmask))+" (whole watershed inside the domain) out of "+str(int(np.sum(domainmask>0)))+" domain cells")
+
     # if np.sum(domainmask)==0:
     #     sys.exit("It seems the transposition domain is relatively small with respect to the basin mask. Stcohastic Storms cannot be created")
 
@@ -2409,7 +2436,11 @@ if FreqAnalysis:
                 
 
         if transpotype=='uniform' and domain_type=='irregular':
-            rndloc=np.random.randint(0,np.sum(np.equal(domainmask,True)),np.sum(whichstorms==i))
+            # GP 2026-10-16: OLD (kept for reference) drew from the number of domain cells, which only matched len(xmask)
+            # because domainmask had been trimmed in place:
+            # rndloc=np.random.randint(0,np.sum(np.equal(domainmask,True)),np.sum(whichstorms==i))
+            # GP 2026-10-16: NEW: draw uniformly among the valid transposition locations
+            rndloc=np.random.randint(0,len(xmask),np.sum(whichstorms==i))
             for pt in np.arange(0,whichx.shape[3]):
                 whichx[whichstorms==i,pt]=xmask[rndloc].reshape(len(xmask[rndloc]))
                 whichy[whichstorms==i,pt]=ymask[rndloc].reshape(len(ymask[rndloc]))
