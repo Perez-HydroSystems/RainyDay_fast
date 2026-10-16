@@ -2722,10 +2722,10 @@ def createfilelist(inpath, includeyears, excludemonths):
         except:
             sys.exit("You need to give file names in YYYYMMDD, YYYY-MM-DD or YYYY/MM/DD formats")
         file_year = file_date.year; file_month = file_date.month
-        ## Added by GP to manually exclude Harvey August 2017
-        file_month = file_date.month                # GP
-        if file_year == 2017 and file_month == 8:   # GP
-            continue                                # GP
+        # ## Added by GP to manually exclude Harvey August 2017
+        # file_month = file_date.month                # GP
+        # if file_year == 2017 and file_month == 8:   # GP
+        #     continue                                # GP
 
         if includeyears == False:
             if file_month not in excludemonths:

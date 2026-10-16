@@ -197,6 +197,26 @@ elif CreateCatalog.lower()=='false':
     CreateCatalog=False
 else:
     sys.exit("CreateCatalog must be either 'true' or 'false'!")
+
+# CATALOGPATH (optional, read-only): folder + file prefix of an existing storm catalog to reuse,
+# e.g. "/path/to/StormCatalog/Talequah_3days.nc" -> reads /path/to/StormCatalog/Talequah_3days.nc_storm_*.nc
+# If not given, the catalog is read from MAINPATH/SCENARIONAME/StormCatalog/CATALOGNAME (original behavior).
+catalogpath=cardinfo.get("CATALOGPATH",None)
+if isinstance(catalogpath,str) and catalogpath.strip()!='' and catalogpath.strip().lower()!='none':
+    catalogpath=os.path.abspath(os.path.expanduser(catalogpath.strip()))
+    if CreateCatalog:
+        print("WARNING: CATALOGPATH is only used to read an existing catalog. Since CREATECATALOG is 'true', it will be ignored and the new catalog will be written to "+fullpath+'/StormCatalog')
+        catalogpath=fullpath+'/StormCatalog/'+catalogname
+    else:
+        if os.path.isdir(catalogpath):
+            sys.exit("CATALOGPATH must include the catalog prefix, not only the folder, e.g. '"+catalogpath+"/"+catalogname+"'")
+        if os.path.isdir(os.path.dirname(catalogpath))==False:
+            sys.exit("The folder given in CATALOGPATH doesn't exist: "+os.path.dirname(catalogpath))
+        if os.path.basename(catalogpath)!=catalogname:
+            print("NOTE: using the catalog prefix from CATALOGPATH ('"+os.path.basename(catalogpath)+"') instead of CATALOGNAME ('"+catalogname+"')")
+            catalogname=os.path.basename(catalogpath)
+else:
+    catalogpath=fullpath+'/StormCatalog/'+catalogname
 # if CreateCatalog:
 #     try:
 #         os.mkdir(fullpath + '/StormCatalog')
@@ -215,13 +235,25 @@ except Exception:
 
 # if you are reusing a storm catalog, identify all the associated files and create a list of them:
 if CreateCatalog==False:
-    stormlist = glob.glob(fullpath+'/StormCatalog/'+catalogname + '*' + '.nc')
+    stormlist = glob.glob(catalogpath + '_storm_' + '*' + '.nc')
     stormlist = sorted(stormlist, key=lambda path: RainyDay.extract_storm_number(path, catalogname))
-    if os.path.isfile(stormlist[0])==False:
-        sys.exit("You need to create a storm catalog first.")
+    if len(stormlist)==0:
+        sys.exit("You need to create a storm catalog first. No storm files found matching "+catalogpath+"_storm_*.nc")
     else:
-        print("Reading an existing storm catalog!")
+        print("Reading an existing storm catalog from "+os.path.dirname(catalogpath)+" ("+str(len(stormlist))+" storm files)")
         catrain,stormtime,latrange,lonrange,catx,caty,catmax,catmask,domainmask,cattime,timeres=RainyDay.readcatalog(stormlist[-1])
+        # warn if the catalog was built with different key settings than this run (the catalog stores its original JSON)
+        try:
+            import ast
+            with xr.open_dataset(stormlist[-1]) as tempcat:
+                catparams=ast.literal_eval(tempcat.attrs['description'])
+            for key in ["DURATION","DOMAINTYPE","DOMAINSHP","POINTAREA","WATERSHEDSHP","POINTLAT","POINTLON"]:
+                if catparams.get(key)!=cardinfo.get(key):
+                    print("WARNING: the storm catalog was built with "+key+"="+str(catparams.get(key))+", but this run has "+key+"="+str(cardinfo.get(key)))
+            if catparams.get("POINTAREA")!=cardinfo.get("POINTAREA") or catparams.get("WATERSHEDSHP")!=cardinfo.get("WATERSHEDSHP"):
+                print("WARNING: when reusing a catalog, the analysis area (mask) is taken from the catalog, not from this run's POINTAREA/WATERSHEDSHP!")
+        except Exception:
+            print("Couldn't read the original parameters stored in the storm catalog, skipping the consistency check.")
         yres=np.abs(latrange.diff(dim='latitude')).mean()
         xres=np.abs(lonrange.diff(dim='longitude')).mean()
         catarea=[lonrange[0],lonrange[-1]+xres,latrange[-1]-yres,latrange[0]]
@@ -447,7 +479,7 @@ if domain_type.lower()=='irregular':
         yres=np.abs(latrange.diff(dim='latitude')).mean()
         xres=np.abs(lonrange.diff(dim='longitude')).mean()
         inarea=np.array([lonrange[0],lonrange[-1]+res,latrange[-1]-res,latrange[0]])
-        domainshp=cardinfo["DOMAINSHP"]
+        domainshp=cardinfo.get("DOMAINSHP","")
     if ncfdom==False and shpdom==False and CreateCatalog:
         sys.exit("You selected 'irregular' for 'DOMAINTYPE', but didn't provide a shapefile or NetCDF file for the domain!")
 else:  ###### Ashar:  Dan I beleive we can remove this condition and add it to the if condition above, this may avoid extra condition.
