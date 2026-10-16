@@ -8,7 +8,9 @@ creation scan** — the part that reads every timestep of the precipitation reco
 finds the max-rainfall storm placement — which dominates runtime for long records.
 
 **Ground rules**
-- Local only: NEVER `git commit` or `git push`. All work stays in the working tree.
+- Commit or push only when the user asks. The remote for this fork is `mod`
+  (private `Perez-HydroSystems/RainyDay_mod`); `origin` is the older `Perez-HydroSystems/RainyDay`.
+- Mark code changes with `GP YYYY-MM-DD` comments and keep the previous implementation commented.
 - Always pass the parameter JSON as an **absolute path** (`writecatalog` re-opens it
   by path later in the run; see "Bugs found" below).
 - Any change to catalog-scan code must re-run the verification harness (below) and
