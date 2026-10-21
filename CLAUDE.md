@@ -193,6 +193,49 @@ Benchmark artifacts (not the shipped macOS references), all in `tools/`: `bench_
 identical-output check), `profile_scan.py` (read/window/compute split), `make_synthetic_2003.py`.
 The env-gated dump hook `RAINYDAY_DUMP_SCANINPUTS` in `RainyDay_Py3.py` feeds them.
 
+## MULTIPLEDURATIONS — frequency analysis for many durations in one run (GP 2026-10-21)
+
+JSON: `"DURATION": 72, "DURATIONCORRECTION": "false", "MULTIPLEDURATIONS": [1,3,6,12,24,48,72]` (+ optional
+`"MULTIDURATIONENGINE": "fast"|"exact"`, default `fast`). One run builds (CREATECATALOG) or reads (CATALOGPATH) the
+DURATION catalog and writes `MAINPATH/<SCENARIONAME>_<d>/<SCENARIONAME>_<d>_FreqAnalysis.csv/.png` for every d; the
+catalog and diagnostics live only in `<SCENARIONAME>_<DURATION>/` (that is `fullpath`; no bare SCENARIONAME folder).
+
+**Why it can be exact.** The only seed is `np.random.seed(0)`; the draws (Poisson counts, storm indices, the location
+per storm) depend on NSTORMS/NYEARS/NREALIZATIONS/valid anchors, never on DURATION or DURATIONCORRECTION, and no random
+call happens before resampling in either mode. Once the catalog exists, a d-hour analysis differs from the parent only
+in `passrain` (`rolling_sum` of d steps instead of the `nansum`) and `SSTalt(durcheck=True)`. So every d < DURATION
+reuses the parent's draws and reproduces the separate run (CATALOGPATH = this catalog, DURATION d,
+DURATIONCORRECTION true). With CREATECATALOG the run checks that the masks stored in the new catalog equal the ones in
+memory and that the CATALOGPATH year/month file filter would keep every storm (else it exits).
+
+**Engines.** `exact`: the original `SSTalt` per duration. It runs in numba **object mode** (`nopython_signatures`
+empty: it contains `sys.exit`/`erfinv`), ~10 µs Python dispatch per window, cost ∝ draws × Σ(73−d) windows.
+`fast`: `SSTalt_multidur` (nopython) — same arithmetic (zero rule: all box cells < 0.5 in every window → 0; strict
+max from 0. over `numba_multimask_calc`), all shorter durations in one compiled pass over the stacked
+`rolling_sum` windows. Bit-identical to `exact` (unit tests on dense and sparse fields + all runs below).
+
+**Code.** M: parse at the MAINPATH/SCENARIONAME block; checks before `if FreqAnalysis:`; per-storm sub-duration block at
+the end of the resampling loop (`whichrain_md`); `-9999` no-storm mask; outputs right after the parent's. The parent's
+CSV/PNG block moved verbatim into F `write_frequency_outputs` (old code commented); F `rank_frequency` replicates the
+watershed/box ranking (pds/ams + RETURNLEVELS). Not supported (exits): SCENARIOS, ENHANCEDSST, ROTATIONANGLE,
+INTENSDISTR, point/pointlist, DURATIONCORRECTION true, d > DURATION, d not a multiple of the time step.
+Hook: `RAINYDAY_DUMP_WHICHRAIN=<dir>` saves the raw transposed depths (`<name>_whichrain.npy`) of every duration.
+
+**Verification (2026-10-21, macOS, RainyDay_Env, numba 0.55.2).**
+- `tools/test_multidurations.sh` (Talequah, CREATECATALOG + CATALOGPATH, exact & fast vs separate 1/6/72 h): ALL PASS.
+- Production-size cases (NSTORMS 400, NYEARS 500, 100 realizations, CATALOGPATH on the `_aorcfix_test` catalogs):
+  every FreqAnalysis.csv of the multi runs (fast and exact) byte-identical to the separate runs made **with the old
+  code** — Iowa pixel 7/7 durations, Iowa circle 16000 km² 7/7, Texas circle 8000 km² 72 h + 1 h; raw depths of
+  `fast` and `exact` bitwise equal for all 3 basins × 7 durations, and equal to new-code separate runs (pixel
+  1/24/72 h, 16000 km² 3/72 h, 8000 km² 1/72 h).
+- CREATECATALOG multi run (Texas 8000 km²): rebuilt catalog ALL PASS vs the existing one (`compare_catalogs.py`,
+  400 storms), all 7 CSVs identical to the CATALOGPATH multi run, raw depths bitwise equal to separate runs.
+- Talequah harness ALL PASS; `test_windowed_block.py` and `test_domainaware_equivalence.py` PASS (scan untouched).
+- Wall time, all 7 durations from an existing catalog, 14 jobs sharing 16 cores (`fast` / `exact`): Iowa pixel
+  382 / 2,988 s (the separate 1 h run alone took 686 s; separate d < 72 runs of a shape ~3,200 s in production);
+  Texas 8000 km² 1,031 / 3,906 s; Iowa 16000 km² 2,058 / 4,567 s (separate d < 72 runs ~7,000 s). The `fast` gain
+  shrinks for large basins because each window then sums a large mask box (~1,500 cells) in compiled code.
+
 ## Bugs found & fixed along the way
 
 - `RainyDay_Py3.py` storm-writing loop: `except OSError` silently swallowed

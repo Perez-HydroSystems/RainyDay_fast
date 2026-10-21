@@ -8,10 +8,37 @@
 > - `CATALOGPATH` to reuse an existing storm catalog from another folder, with consistency warnings;
 > - transposition on irregular domains now requires the **whole watershed inside the domain**, the same rule as the
 >   storm-catalog search (GP 2026-10-16, see the comments in `Source/RainyDay_Py3.py`);
+> - `MULTIPLEDURATIONS` to run the frequency analysis for several durations from one parent storm catalog in a single
+>   run (GP 2026-10-21, see below);
 > - several bug fixes and diagnostic-plot changes.
 >
 > Changes are marked in the code with `GP` comments; previous implementations are kept as comments.
 > Results can differ from the original RainyDay. The original description follows.
+
+### MULTIPLEDURATIONS (GP 2026-10-21)
+
+One run builds (or reads, with `CATALOGPATH`) the storm catalog for `DURATION` and writes a frequency analysis for every
+duration in the list, instead of one JSON and one run per duration:
+
+```json
+"DURATION": 72,
+"DURATIONCORRECTION": "false",
+"MULTIPLEDURATIONS": [1, 3, 6, 12, 24, 48, 72],
+"MULTIDURATIONENGINE": "fast"
+```
+
+- Outputs go to `MAINPATH/<SCENARIONAME>_<d>/<SCENARIONAME>_<d>_FreqAnalysis.csv` (and `_FrequencyAnalysis.png`) for
+  every `d`. The storm catalog and the diagnostic plots stay in `MAINPATH/<SCENARIONAME>_<DURATION>/` only.
+- Each duration `d < DURATION` gives exactly what a separate run gives with `CATALOGPATH` = this catalog,
+  `DURATION` = `d` and `DURATIONCORRECTION` = `"true"` (largest `d`-hour window inside each transposed parent storm);
+  `DURATION` itself gives exactly the usual run. All durations share the same random draws, which do not depend on the
+  duration. Verified bit-identical (raw transposed depths and CSVs), see `CLAUDE.md`.
+- `MULTIDURATIONENGINE`: `"fast"` (default) computes all shorter durations in one compiled pass (`SSTalt_multidur`);
+  `"exact"` reuses the original `SSTalt` (object mode) once per duration. Both are bit-identical to separate runs;
+  `"fast"` is much faster (all 7 durations of a basin in about the time of one separate short-duration run).
+- Requirements: `FREQANALYSIS` true, `DURATIONCORRECTION` false, every `d <= DURATION` and a multiple of the time step.
+  Not supported together with `SCENARIOS`, `ENHANCEDSST`, `ROTATIONANGLE`, `INTENSDISTR` or point/pointlist areas.
+- Regression test: `bash tools/test_multidurations.sh` (Talequah example).
 
 ---
 

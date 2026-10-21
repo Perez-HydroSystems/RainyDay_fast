@@ -165,6 +165,16 @@ try:
         scenarioname=cardinfo["SCENARIONAME"]
     except ValueError:
         sys.exit("You didn't specify SCENARIONAME!")
+    # GP 2026-10-21: MULTIPLEDURATIONS (optional): one run builds/reads the parent storm catalog (DURATION) and does a
+    # frequency analysis for every duration in the list. Outputs go to MAINPATH/<SCENARIONAME>_<d>/; the storm catalog
+    # and the diagnostics stay in MAINPATH/<SCENARIONAME>_<DURATION>/ (this run's main folder).
+    multidurations=RainyDay.parse_multidurations(cardinfo.get("MULTIPLEDURATIONS",None))
+    basescenario=scenarioname
+    if multidurations is not None:
+        if "DURATION" not in cardinfo:
+            sys.exit("MULTIPLEDURATIONS needs DURATION (the duration of the parent storm catalog)")
+        scenarioname=basescenario+'_'+RainyDay.durtag(cardinfo["DURATION"])
+        print("MULTIPLEDURATIONS: frequency analyses for "+", ".join(RainyDay.durtag(d) for d in multidurations)+" h from the "+RainyDay.durtag(cardinfo["DURATION"])+" h storm catalog in "+wd+'/'+scenarioname)
     fullpath=wd+'/'+scenarioname
     if os.path.isdir(fullpath)==False:
         #os.system('mkdir -p -v %s' %(fullpath))
@@ -2102,6 +2112,56 @@ if DoDiagnostics:
 # STEP 2 (OPTIONAL): STORM TRANSPOSITION
 #==============================================================================
 
+# GP 2026-10-21: MULTIPLEDURATIONS checks. Each duration d < DURATION must give exactly what a separate run gives
+# (CATALOGPATH = this catalog, DURATION d, DURATIONCORRECTION true): the random draws (seed 0, Poisson counts, storms,
+# locations) do not depend on the duration, so all durations share them; only the per-storm rainfall field differs
+# (rolling sums of d hours and the max over windows, as SSTalt(durcheck=True)). Validated configuration only.
+subdurs=[]
+if multidurations is not None:
+    if FreqAnalysis==False:
+        sys.exit("MULTIPLEDURATIONS needs FREQANALYSIS 'true'")
+    if durcorrection:
+        sys.exit("MULTIPLEDURATIONS: DURATIONCORRECTION must be 'false' (it applies to the parent DURATION; the shorter durations always use the max over windows of the parent catalog)")
+    if durationcheck==False:
+        sys.exit("MULTIPLEDURATIONS: the storm catalog duration must equal DURATION")
+    if Scenarios:
+        sys.exit("MULTIPLEDURATIONS doesn't support SCENARIOS yet")
+    if rescaletype!='none' or rotation or userdistr.all()!=False:
+        sys.exit("MULTIPLEDURATIONS doesn't support ENHANCEDSST, ROTATIONANGLE or INTENSDISTR")
+    if areatype.lower() in ('point','pointlist'):
+        sys.exit("MULTIPLEDURATIONS supports watershed or box areas only (not POINTAREA point/pointlist)")
+    if calctype.lower() not in ('ams','pds'):
+        sys.exit("MULTIPLEDURATIONS supports CALCTYPE 'ams' or 'pds' only")
+    if multidurations[-1]>duration+1e-9:
+        sys.exit("MULTIPLEDURATIONS: every duration must be <= DURATION ("+RainyDay.durtag(duration)+" h)")
+    subdurs=[d for d in multidurations if not np.isclose(d,duration)]
+    substeps=[]
+    for d in subdurs:
+        if not np.isclose(d*60./rainprop.timeres,np.round(d*60./rainprop.timeres)):
+            sys.exit("MULTIPLEDURATIONS: "+RainyDay.durtag(d)+" h is not a multiple of the time resolution ("+str(rainprop.timeres)+" min)")
+        substeps.append(int(np.round(d*60./rainprop.timeres)))
+    # "fast" (default): one compiled pass for all shorter durations (SSTalt_multidur), verified bit-identical to "exact"
+    # and to separate runs; "exact": the original SSTalt (object mode) once per duration
+    mdengine=str(cardinfo.get("MULTIDURATIONENGINE","fast")).lower()
+    if mdengine not in ('exact','fast'):
+        sys.exit("MULTIDURATIONENGINE must be 'exact' or 'fast'")
+    if CreateCatalog:
+        # a separate CATALOGPATH run reads the masks from the written catalog and filters storms by file-name year/month:
+        # make sure this run uses exactly the same masks and storms
+        _,_,_,_,_,_,_,mdmask,mddomain,_,_=RainyDay.readcatalog(stormlist[-1])
+        mdmask=np.array(mdmask)
+        mdtrim=np.delete(mdmask,np.where(np.sum(mdmask,axis=0)==0),axis=1)
+        mdtrim=np.array(np.delete(mdtrim,np.where(np.sum(mdmask,axis=1)==0),axis=0),dtype='float32')
+        if mdtrim.dtype!=trimmask.dtype or not np.array_equal(mdtrim,trimmask) or not np.array_equal(np.array(mddomain)>0,domainmask>0):
+            sys.exit("MULTIPLEDURATIONS: the masks stored in the new catalog differ from the ones in memory; can't guarantee results identical to separate runs")
+        if includeyears==False:
+            mdkeep=[np.int32(RainyDay.extract_date(storm, catalogname)[4:6]) not in excludemonths for storm in stormlist]
+        else:
+            mdkeep=[np.int32(RainyDay.extract_date(storm, catalogname)[4:6]) not in excludemonths and np.int32(RainyDay.extract_date(storm, catalogname)[:4]) in includeyears for storm in stormlist]
+        if not all(mdkeep):
+            sys.exit("MULTIPLEDURATIONS: some catalog storms fall outside INCLUDEYEARS/EXCLUDEMONTHS; a separate CATALOGPATH run would drop them")
+    print("MULTIPLEDURATIONS: parent "+RainyDay.durtag(duration)+" h + "+", ".join(RainyDay.durtag(d) for d in subdurs)+" h, engine '"+mdengine+"'")
+
 if FreqAnalysis:
     print("resampling and transposing...")
     
@@ -2192,7 +2252,10 @@ if FreqAnalysis:
         whichy=np.zeros((whichstorms.shape[0],whichstorms.shape[1],whichstorms.shape[2],1),dtype='int32')  
         whichrain=np.zeros((whichstorms.shape[0],whichstorms.shape[1],whichstorms.shape[2],1),dtype='float32')
         whichstep=np.zeros((whichstorms.shape[0],whichstorms.shape[1],whichstorms.shape[2],1),dtype='int32')
-    
+    # GP 2026-10-21: MULTIPLEDURATIONS: depths of the shorter durations for the same draws (storm, location)
+    if len(subdurs)>0:
+        whichrain_md=np.zeros((len(subdurs),)+whichrain.shape,dtype='float32')
+
     
     if durcorrection:
         whichtimeind=np.zeros((whichstorms.shape),dtype='float32')
@@ -2547,9 +2610,27 @@ if FreqAnalysis:
                         whichrain[whichstorms==i,pt]=temprain*rainprop.timeres/60. 
                     else:
                         temprain,whichstep[whichstorms==i,pt]=RainyDay.SSTalt_singlecell(passrain,whichx[whichstorms==i,pt],whichy[whichstorms==i,pt],trimmask,1,1,durcheck=durcorrection)
-                        whichrain[whichstorms==i,pt]=temprain*rainprop.timeres/60. 
+                        whichrain[whichstorms==i,pt]=temprain*rainprop.timeres/60.
 
-    if (durationcheck==False and durcorrection==False): 
+        # GP 2026-10-21: MULTIPLEDURATIONS: the shorter durations of this storm, same draws (whichx/whichy), exactly as
+        # a separate run with DURATIONCORRECTION true: passrain = rolling sums of d hours, SSTalt(durcheck=True)
+        if len(subdurs)>0:
+            mdsel=whichstorms==i
+            mdx=whichx[mdsel,0]
+            mdy=whichy[mdsel,0]
+            if mdengine=='exact':
+                for jd in range(0,len(subdurs)):
+                    mdpass=np.array(RainyDay.rolling_sum(catrain, substeps[jd]),dtype='float32')
+                    mdrain,_=RainyDay.SSTalt(mdpass,mdx,mdy,trimmask,maskheight,maskwidth,durcheck=True)
+                    whichrain_md[jd][mdsel,0]=mdrain*rainprop.timeres/60./mnorm
+            else:
+                mdwins=[np.array(RainyDay.rolling_sum(catrain, s),dtype='float32') for s in substeps]
+                mdoff=np.cumsum([0]+[w.shape[0] for w in mdwins]).astype(np.int64)
+                mdrain=RainyDay.SSTalt_multidur(np.ascontiguousarray(np.concatenate(mdwins,axis=0)),mdoff,mdx,mdy,trimmask,maskheight,maskwidth)
+                for jd in range(0,len(subdurs)):
+                    whichrain_md[jd][mdsel,0]=mdrain[jd]*rainprop.timeres/60./mnorm
+
+    if (durationcheck==False and durcorrection==False):
         cattime=temptime
     
     if areatype.lower()=='pointlist' or areatype.lower()=='point':
@@ -2572,6 +2653,16 @@ if FreqAnalysis:
     # modified by DBW to account for k=0 situations, 9/22/2022
     nostorm_index=np.equal(whichstorms,-9999)
     whichrain[nostorm_index]=-9999.
+    if len(subdurs)>0:      # GP 2026-10-21: MULTIPLEDURATIONS
+        whichrain_md[:,nostorm_index]=-9999.
+    # GP 2026-10-21: debugging/verification hook: RAINYDAY_DUMP_WHICHRAIN=<folder> saves the raw transposed depths
+    # (before ranking) of every duration as <name>_whichrain.npy; does nothing when the variable is not set
+    mddump=os.environ.get("RAINYDAY_DUMP_WHICHRAIN","").strip()
+    if mddump!='':
+        os.makedirs(mddump,exist_ok=True)
+        np.save(os.path.join(mddump,scenarioname+'_whichrain.npy'),whichrain)
+        for jd in range(0,len(subdurs)):
+            np.save(os.path.join(mddump,basescenario+'_'+RainyDay.durtag(subdurs[jd])+'_whichrain.npy'),whichrain_md[jd])
     whichx[nostorm_index]=-9999
     whichy[nostorm_index]=-9999
     try:
@@ -2904,65 +2995,77 @@ if FreqAnalysis:
         np.savetxt(FreqFile_max,freqanalysis_max,delimiter=',',header='prob.exceed,returnperiod,maxrain',fmt='%6.2f',comments='#',footer=ptlistname)
         
     else:
-        if spreadtype=='ensemble' or spreadtype=='all_realizations':
-            spreadmin=np.nanmin(sortrain,axis=1)
-            spreadmax=np.nanmax(sortrain,axis=1)
-            spreadmean=np.nanmean(sortrain,1)
-        else:
-            spreadmin=np.percentile(sortrain,(100-quantilecalc)/2,axis=1)
-            spreadmax=np.percentile(sortrain,quantilecalc+(100-quantilecalc)/2,axis=1)
-    
-        if spreadtype=='ensemble' or spreadtype=='quantile':
-            freqanalysis=np.column_stack((exceedp,returnperiod,spreadmin,spreadmean,spreadmax))
-            np.savetxt(FreqFile,freqanalysis,delimiter=',',header='prob.exceed,returnperiod,minrain,meanrain,maxrain',fmt='%6.2f',comments='')
-        elif spreadtype=='all_realizations':
-            freqanalysis=np.column_stack((exceedp,returnperiod,sortrain))
-            rlz_headers = [f'rlz{i+1}' for i in range(nrealizations)]
-            header = 'prob.exceed,returnperiod,' + ','.join(rlz_headers)
-            np.savetxt(FreqFile,freqanalysis,delimiter=',',header=header,fmt='%6.2f',comments='')
-        
-        import matplotlib.patches as mpatches
-        from matplotlib.font_manager import FontProperties
-        from matplotlib import pyplot as plt
-       # warnings.filterwarnings('ignore')
-        fontP = FontProperties()
-        fontP.set_size('xx-small')
-        fig, ax = plt.subplots(1)
-        line1, = plt.plot(exceedp[exceedp<=0.5], RainyDay.np.nanmean(sortrain,1)[exceedp<=0.5], lw=1, label='Average', color='blue')
-    
-        ax.fill_between(exceedp[exceedp<=0.5], spreadmin[exceedp<=0.5], spreadmax[exceedp<=0.5], facecolor='dodgerblue', alpha=0.5,label='Ensemble Variability')
-        blue_patch = mpatches.Patch(color='dodgerblue', label='Spread')
-        plt.legend(handles=[line1,blue_patch],loc='lower right',prop = fontP)
-    
-        if np.nanmax(spreadmax[exceedp<=0.5])<10.:
-            upperlimit=10.
-        elif np.nanmax(spreadmax[exceedp<=0.5])<100.:
-            upperlimit=100.
-        elif np.nanmax(spreadmax[exceedp<=0.5])<1000.:
-            upperlimit=1000.
-        else:
-            upperlimit=10000.
-            
-        if np.nanmin(spreadmin[exceedp<=0.5])<1.:
-            lowerlimit=0.1
-        elif np.nanmin(spreadmin[exceedp<=0.5])<10.:
-            lowerlimit=1 
-        elif np.nanmin(spreadmin[exceedp<=0.5])<100.:
-            lowerlimit=10. 
-        else:
-            lowerlimit=100.
-                
-                
-        plt.ylim(lowerlimit,upperlimit)
-        ax.set_xlabel('Annual Exceed. Prob. [-]\n1/(Return Period) [year]')
-        ax.set_ylabel('Precip. Depth [mm]')
-        ax.set_yscale('log')
-        ax.set_xscale('log')
-        plt.gca().invert_xaxis()
-        ax.grid()
-        plt.tight_layout()
-        plt.savefig(fullpath+'/'+scenarioname+'_FrequencyAnalysis.png',dpi=250)
-        plt.close('all')
+        # GP 2026-10-21: the CSV/PNG writing below moved unchanged to RainyDay.write_frequency_outputs, so that every
+        # MULTIPLEDURATIONS duration writes its outputs with the same code (old code kept commented):
+        # if spreadtype=='ensemble' or spreadtype=='all_realizations':
+        #     spreadmin=np.nanmin(sortrain,axis=1)
+        #     spreadmax=np.nanmax(sortrain,axis=1)
+        #     spreadmean=np.nanmean(sortrain,1)
+        # else:
+        #     spreadmin=np.percentile(sortrain,(100-quantilecalc)/2,axis=1)
+        #     spreadmax=np.percentile(sortrain,quantilecalc+(100-quantilecalc)/2,axis=1)
+        #
+        # if spreadtype=='ensemble' or spreadtype=='quantile':
+        #     freqanalysis=np.column_stack((exceedp,returnperiod,spreadmin,spreadmean,spreadmax))
+        #     np.savetxt(FreqFile,freqanalysis,delimiter=',',header='prob.exceed,returnperiod,minrain,meanrain,maxrain',fmt='%6.2f',comments='')
+        # elif spreadtype=='all_realizations':
+        #     freqanalysis=np.column_stack((exceedp,returnperiod,sortrain))
+        #     rlz_headers = [f'rlz{i+1}' for i in range(nrealizations)]
+        #     header = 'prob.exceed,returnperiod,' + ','.join(rlz_headers)
+        #     np.savetxt(FreqFile,freqanalysis,delimiter=',',header=header,fmt='%6.2f',comments='')
+        # 
+        # import matplotlib.patches as mpatches
+        # from matplotlib.font_manager import FontProperties
+        # from matplotlib import pyplot as plt
+        #       # warnings.filterwarnings('ignore')
+        # fontP = FontProperties()
+        # fontP.set_size('xx-small')
+        # fig, ax = plt.subplots(1)
+        # line1, = plt.plot(exceedp[exceedp<=0.5], RainyDay.np.nanmean(sortrain,1)[exceedp<=0.5], lw=1, label='Average', color='blue')
+        #
+        # ax.fill_between(exceedp[exceedp<=0.5], spreadmin[exceedp<=0.5], spreadmax[exceedp<=0.5], facecolor='dodgerblue', alpha=0.5,label='Ensemble Variability')
+        # blue_patch = mpatches.Patch(color='dodgerblue', label='Spread')
+        # plt.legend(handles=[line1,blue_patch],loc='lower right',prop = fontP)
+        #
+        # if np.nanmax(spreadmax[exceedp<=0.5])<10.:
+        #     upperlimit=10.
+        # elif np.nanmax(spreadmax[exceedp<=0.5])<100.:
+        #     upperlimit=100.
+        # elif np.nanmax(spreadmax[exceedp<=0.5])<1000.:
+        #     upperlimit=1000.
+        # else:
+        #     upperlimit=10000.
+        #     
+        # if np.nanmin(spreadmin[exceedp<=0.5])<1.:
+        #     lowerlimit=0.1
+        # elif np.nanmin(spreadmin[exceedp<=0.5])<10.:
+        #     lowerlimit=1 
+        # elif np.nanmin(spreadmin[exceedp<=0.5])<100.:
+        #     lowerlimit=10. 
+        # else:
+        #     lowerlimit=100.
+        #         
+        #         
+        # plt.ylim(lowerlimit,upperlimit)
+        # ax.set_xlabel('Annual Exceed. Prob. [-]\n1/(Return Period) [year]')
+        # ax.set_ylabel('Precip. Depth [mm]')
+        # ax.set_yscale('log')
+        # ax.set_xscale('log')
+        # plt.gca().invert_xaxis()
+        # ax.grid()
+        # plt.tight_layout()
+        # plt.savefig(fullpath+'/'+scenarioname+'_FrequencyAnalysis.png',dpi=250)
+        # plt.close('all')
+        RainyDay.write_frequency_outputs(sortrain,exceedp,returnperiod,FreqFile,fullpath+'/'+scenarioname+'_FrequencyAnalysis.png',spreadtype,globals().get('quantilecalc'),nrealizations)
+
+        # GP 2026-10-21: MULTIPLEDURATIONS: rank and write every shorter duration to MAINPATH/<SCENARIONAME>_<d>/
+        for jd in range(0,len(subdurs)):
+            mdname=basescenario+'_'+RainyDay.durtag(subdurs[jd])
+            mdpath=wd+'/'+mdname
+            os.makedirs(mdpath,exist_ok=True)
+            mdsort,mdexceed,mdrp=RainyDay.rank_frequency(whichrain_md[jd],calctype,nsimulations,alllevels,globals().get('speclevels'))
+            RainyDay.write_frequency_outputs(mdsort,mdexceed,mdrp,mdpath+'/'+mdname+'_FreqAnalysis.csv',mdpath+'/'+mdname+'_FrequencyAnalysis.png',spreadtype,globals().get('quantilecalc'),nrealizations)
+            print('MULTIPLEDURATIONS: wrote '+mdpath+'/'+mdname+'_FreqAnalysis.csv')
             
         
     #################################################################################

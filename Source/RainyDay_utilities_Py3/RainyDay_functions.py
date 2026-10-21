@@ -1341,7 +1341,34 @@ def SSTalt(passrain,sstx,ssty,trimmask,maskheight,maskwidth,intensemean=None,int
 @jit(nopython=True,fastmath=True)
 def numba_multimask_calc(passrain,trimmask,ssty,sstx,maskheight,maskwidth):
     train=np.multiply(passrain[ssty : ssty+maskheight , sstx : sstx+maskwidth],trimmask)
-    rainsum=np.sum(train)       
+    rainsum=np.sum(train)
+    return rainsum
+
+
+# GP 2026-10-21: MULTIPLEDURATIONS "fast" engine. Same arithmetic as SSTalt(..., durcheck=True) with no rescaling
+# (multiplier = 1), for several durations at once and fully compiled (SSTalt falls back to object mode, so every
+# window costs a Python-level call). allwin stacks the rolling-sum windows of all durations (float32, exactly
+# RainyDay.rolling_sum per duration); duration j owns windows offsets[j]:offsets[j+1]. For each draw k and duration j:
+#   - zero rule of SSTalt: if every cell of the box is < 0.5 in every window of that duration -> 0
+#   - otherwise the strict maximum (starting from 0.) over the windows of numba_multimask_calc (same function)
+@jit(nopython=True,fastmath=True)
+def SSTalt_multidur(allwin,offsets,sstx,ssty,trimmask,maskheight,maskwidth):
+    ndur=len(offsets)-1
+    nreals=len(sstx)
+    rainsum=np.zeros((ndur,nreals),dtype=np.float32)
+    for k in range(0,nreals):
+        y=int(ssty[k])
+        x=int(sstx[k])
+        for j in range(0,ndur):
+            if np.all(np.less(allwin[offsets[j]:offsets[j+1],y:y+maskheight,x:x+maskwidth],0.5)):
+                rainsum[j,k]=0.
+            else:
+                storesum=0.
+                for kk in range(offsets[j],offsets[j+1]):
+                    tempsum=numba_multimask_calc(allwin[kk],trimmask,y,x,maskheight,maskwidth)*1.
+                    if tempsum>storesum:
+                        storesum=tempsum
+                rainsum[j,k]=storesum
     return rainsum
 
 
@@ -3042,3 +3069,119 @@ def replace_year(dt, new_year):
     result = np.datetime64(dt, 'Y') + np.timedelta64(year_diff, 'Y') + time_part
 
     return result
+
+#==============================================================================
+# GP 2026-10-21: MULTIPLEDURATIONS helpers (one run, one parent storm catalog, a frequency analysis per duration)
+#==============================================================================
+def durtag(d):
+    """Duration label used in folder/file names: 72.0 -> '72', 1.5 -> '1.5'."""
+    d = float(d)
+    return str(int(d)) if d.is_integer() else ('%g' % d)
+
+
+def parse_multidurations(value):
+    """MULTIPLEDURATIONS JSON value -> sorted list of floats (hours), or None when absent/'none'/'false'/empty.
+    Accepts a list ([1, 3, 6]) or a comma-separated string ("1,3,6")."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        v = value.strip()
+        if v.lower() in ('', 'none', 'false'):
+            return None
+        value = [x for x in v.replace(';', ',').split(',') if x.strip() != '']
+    if not isinstance(value, (list, tuple)) or len(value) == 0:
+        sys.exit("MULTIPLEDURATIONS must be a list of durations in hours, e.g. [1, 3, 6, 12, 24, 48, 72]")
+    try:
+        durs = sorted(set(float(x) for x in value))
+    except (TypeError, ValueError):
+        sys.exit("MULTIPLEDURATIONS must contain numbers (hours): " + str(value))
+    if durs[0] <= 0.:
+        sys.exit("MULTIPLEDURATIONS contains a zero or negative duration!")
+    return durs
+
+
+def rank_frequency(whichrain, calctype, nsimulations, alllevels, speclevels):
+    """Annual maxima (AMS) or the top-NYEARS pooled storms (PDS) per realization, sorted, with exceedance probabilities
+    and return periods; same operations as the main frequency-analysis block of RainyDay_Py3.py for a watershed/box
+    without rescaling, rotation or INTENSDISTR. whichrain must already carry -9999 where no storm was drawn."""
+    if calctype.lower() == 'ams':
+        maxrain = np.nanmax(whichrain[:, :, :, 0], axis=0)
+    elif calctype.lower() == 'pds':
+        temprain = np.squeeze(whichrain)
+        temppds = temprain.reshape(-1, temprain.shape[-1])
+        maxrain = np.sort(temppds, axis=0)[-nsimulations:, :]
+    else:
+        sys.exit("MULTIPLEDURATIONS supports CALCTYPE 'ams' or 'pds' only")
+    exceedp = np.linspace(1, 1./nsimulations, nsimulations)
+    returnperiod = 1/exceedp
+    sortrain = np.sort(maxrain, axis=0)
+    if alllevels == False:
+        reducedlevind = []
+        for i in range(0, len(speclevels)):
+            reducedlevind.append(find_nearest(returnperiod, speclevels[i]))
+        returnperiod = returnperiod[reducedlevind]
+        sortrain = sortrain[reducedlevind, :]
+        exceedp = exceedp[reducedlevind]
+    return sortrain, exceedp, returnperiod
+
+
+def write_frequency_outputs(sortrain, exceedp, returnperiod, FreqFile, figfile, spreadtype, quantilecalc, nrealizations):
+    """Frequency-analysis CSV and PNG of a watershed/box run (moved here unchanged from RainyDay_Py3.py so the
+    parent duration and every MULTIPLEDURATIONS duration write their outputs with the same code)."""
+    if spreadtype=='ensemble' or spreadtype=='all_realizations':
+        spreadmin=np.nanmin(sortrain,axis=1)
+        spreadmax=np.nanmax(sortrain,axis=1)
+        spreadmean=np.nanmean(sortrain,1)
+    else:
+        spreadmin=np.percentile(sortrain,(100-quantilecalc)/2,axis=1)
+        spreadmax=np.percentile(sortrain,quantilecalc+(100-quantilecalc)/2,axis=1)
+
+    if spreadtype=='ensemble' or spreadtype=='quantile':
+        freqanalysis=np.column_stack((exceedp,returnperiod,spreadmin,spreadmean,spreadmax))
+        np.savetxt(FreqFile,freqanalysis,delimiter=',',header='prob.exceed,returnperiod,minrain,meanrain,maxrain',fmt='%6.2f',comments='')
+    elif spreadtype=='all_realizations':
+        freqanalysis=np.column_stack((exceedp,returnperiod,sortrain))
+        rlz_headers = [f'rlz{i+1}' for i in range(nrealizations)]
+        header = 'prob.exceed,returnperiod,' + ','.join(rlz_headers)
+        np.savetxt(FreqFile,freqanalysis,delimiter=',',header=header,fmt='%6.2f',comments='')
+
+    import matplotlib.patches as mpatches
+    from matplotlib.font_manager import FontProperties
+    from matplotlib import pyplot as plt
+    fontP = FontProperties()
+    fontP.set_size('xx-small')
+    fig, ax = plt.subplots(1)
+    line1, = plt.plot(exceedp[exceedp<=0.5], np.nanmean(sortrain,1)[exceedp<=0.5], lw=1, label='Average', color='blue')
+
+    ax.fill_between(exceedp[exceedp<=0.5], spreadmin[exceedp<=0.5], spreadmax[exceedp<=0.5], facecolor='dodgerblue', alpha=0.5,label='Ensemble Variability')
+    blue_patch = mpatches.Patch(color='dodgerblue', label='Spread')
+    plt.legend(handles=[line1,blue_patch],loc='lower right',prop = fontP)
+
+    if np.nanmax(spreadmax[exceedp<=0.5])<10.:
+        upperlimit=10.
+    elif np.nanmax(spreadmax[exceedp<=0.5])<100.:
+        upperlimit=100.
+    elif np.nanmax(spreadmax[exceedp<=0.5])<1000.:
+        upperlimit=1000.
+    else:
+        upperlimit=10000.
+
+    if np.nanmin(spreadmin[exceedp<=0.5])<1.:
+        lowerlimit=0.1
+    elif np.nanmin(spreadmin[exceedp<=0.5])<10.:
+        lowerlimit=1
+    elif np.nanmin(spreadmin[exceedp<=0.5])<100.:
+        lowerlimit=10.
+    else:
+        lowerlimit=100.
+
+    plt.ylim(lowerlimit,upperlimit)
+    ax.set_xlabel('Annual Exceed. Prob. [-]\n1/(Return Period) [year]')
+    ax.set_ylabel('Precip. Depth [mm]')
+    ax.set_yscale('log')
+    ax.set_xscale('log')
+    plt.gca().invert_xaxis()
+    ax.grid()
+    plt.tight_layout()
+    plt.savefig(figfile,dpi=250)
+    plt.close('all')
