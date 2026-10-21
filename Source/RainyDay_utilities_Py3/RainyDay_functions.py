@@ -590,7 +590,12 @@ def build_windowed_block(rainblock, context, nwindow, domainmask):
     if nb > 1:
         windowed[1:] = csum[nwindow:nwindow - 1 + nb] - csum[0:nb - 1]
     windowed *= np.nan_to_num(domainmask).astype(np.float32)
-    return windowed, full[-(nwindow - 1):].copy()
+    # GP 2026-10-20: for a one-step window (DURATION equal to the data time step, e.g. a native 1 h catalog)
+    # nwindow - 1 == 0 and full[-0:] is the WHOLE array, not an empty context: the context then grew with every
+    # block (unbounded memory and time) and the windows of later blocks were read from the start of that array.
+    # Slice from the end by length instead (identical result for nwindow > 1).
+    # return windowed, full[-(nwindow - 1):].copy()
+    return windowed, full[full.shape[0] - (nwindow - 1):].copy()
 
 
 # ---------------------------------------------------------------------------

@@ -204,6 +204,14 @@ The env-gated dump hook `RAINYDAY_DUMP_SCANINPUTS` in `RainyDay_Py3.py` feeds th
   numpy/scipy/netCDF4 — fork-safe here). Same constraint applies on Linux only if
   the start method is changed from its default (`fork`).
 - Removed stray `from unittest import result` (IDE auto-import).
+- `build_windowed_block` (batched engines, 2026-10-20): with a one-step window (catalog
+  DURATION equal to the data time step, e.g. a native 1 h catalog of hourly AORC)
+  `nwindow - 1 == 0` and the returned context `full[-(nwindow-1):]` was `full[-0:]`, i.e.
+  the whole array. The context then grew with every block (13–38 GB, a scan that crawled
+  and stalled) and later windows were read from the start of the record. Now sliced from
+  the end by length; identical for `nwindow > 1`. Talequah 1 h and 3 day: `batchfft` and
+  `batchfft_mp` ALL PASS vs `fft_perstep` (1 h FAILED before the fix). Regression test:
+  `tools/test_windowed_block.py`.
 
 ## CUDA engine `batchcuda` — DONE (built + verified on the Windows/CUDA machine)
 
