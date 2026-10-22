@@ -140,10 +140,7 @@ def _load(lpath):
         meta = json.loads(ds.attrs['rain_meta'])
         names = [str(x) for x in ds['storm_file'].values]
         flist = [str(x) for x in ds['rain_file'].values]
-        first = {}
-        for f in flist:                              # first file of the list for every date (write-loop search)
-            m = re.search(DATE_RE, os.path.basename(f))
-            first.setdefault(m.group().replace("-", "").replace("/", ""), f)
+        first = first_file_by_date(flist)
         c = dict(key=key, ds=ds, meta=meta, names=names, index={n: k for k, n in enumerate(names)}, flist=flist,
                  first=first, cattime=np.array(ds['cattime'], dtype='datetime64[m]'),
                  crc=np.array(ds['rain_crc32'], dtype=np.uint32))
@@ -195,30 +192,36 @@ def attrs_path(path):
     return _split_virtual(path)[0] if is_virtual(path) else path
 
 
-def get_storm_rain(lpath, i, check=True):
-    """Rain array of storm index i (0-based) exactly as the full catalog's storm file holds it (see module doc)."""
-    c = _load(lpath)
-    meta = c['meta']
-    variables, idxes, droplist = meta['variables'], meta['idxes'], meta['droplist']
-    calendar, time_units = meta['calendar'], meta['time_units']
-    timeres = np.int32(np.int16(c['ds'].timeresolution))
-    cattime = c['cattime']
-    # ---- copy of the catalog write loop (RainyDay_Py3.py, "This part saves each storm as single file") ----
-    start_time = cattime[i, 0]
-    end_time = cattime[i, -1]
+def first_file_by_date(flist):
+    """{YYYYMMDD: first file of flist with that date in its name} (the write loop's search, which breaks at the first
+    match)."""
+    first = {}
+    for f in flist:
+        m = re.search(DATE_RE, os.path.basename(f))
+        first.setdefault(m.group().replace("-", "").replace("/", ""), f)
+    return first
+
+
+def rebuild_storm_rain(storm_cattime, shape, first, day_boundary, timeres, variables, idxes, droplist, calendar,
+                       time_units):
+    """Copy of the catalog write loop of RainyDay_Py3.py ("This part saves each storm as single file") for one storm:
+    storm_cattime = cattime[i,:] (datetime64[m]), shape = (nsteps, ny, nx), first = first_file_by_date(flist),
+    day_boundary = RainyDay.check_time(first input time). Returns the rain as writecatalog stores it."""
+    start_time = storm_cattime[0]
+    end_time = storm_cattime[-1]
     current_datetime = start_time
     dataset_date = None
-    catrain = np.zeros([cattime.shape[1]] + list(meta['shape'][1:]), dtype='float32')
+    catrain = np.zeros(tuple(shape), dtype='float32')
     k = 0
     stm_file = None
     while current_datetime <= end_time:
-        if meta['first_time_is_day_boundary']:
+        if day_boundary:
             current_date = np.datetime_as_string(current_datetime, unit='D')
         else:
             current_date = np.datetime_as_string(current_datetime - timeres, unit='D')
         if current_date != dataset_date:
             dataset_date = current_date
-            stm_file = c['first'].get(current_date.replace("-", ""), stm_file)     # no file for the date: sticky
+            stm_file = first.get(current_date.replace("-", ""), stm_file)      # no file for the date: sticky
             if stm_file is None:
                 sys.exit("light catalog: no input file for " + current_date)
             stm_rain, stm_time = RainyDay.readnetcdf(stm_file, variables, idxes, dropvars=droplist,
@@ -231,11 +234,20 @@ def get_storm_rain(lpath, i, check=True):
         current_datetime += timeres
         k += 1
     catrain[np.isnan(catrain)] = -9999.              # writecatalog
-    if list(catrain.shape) != list(meta['shape']):
-        sys.exit("light catalog: storm " + str(i + 1) + " rebuilt with shape " + str(catrain.shape))
+    return catrain
+
+
+def get_storm_rain(lpath, i, check=True):
+    """Rain array of storm index i (0-based) exactly as the full catalog's storm file holds it (see module doc)."""
+    c = _load(lpath)
+    meta = c['meta']
+    timeres = np.int32(np.int16(c['ds'].timeresolution))
+    catrain = rebuild_storm_rain(c['cattime'][i, :], meta['shape'], c['first'], meta['first_time_is_day_boundary'],
+                                 timeres, meta['variables'], meta['idxes'], meta['droplist'], meta['calendar'],
+                                 meta['time_units'])
     if check and rain_crc32(catrain) != int(c['crc'][i]):
-        sys.exit("light catalog: the rain of storm " + str(i + 1) + " rebuilt from " + os.path.dirname(stm_file)
-                 + " doesn't match the catalog (CRC32). The input files changed since the catalog was written.")
+        sys.exit("light catalog " + lpath + ": the rain of storm " + str(i + 1) + " rebuilt from the input files "
+                 "doesn't match the catalog (CRC32): the input files changed since the catalog was written.")
     return catrain
 
 
