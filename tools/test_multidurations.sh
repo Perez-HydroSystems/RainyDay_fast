@@ -1,7 +1,10 @@
 #!/bin/bash
 # GP 2026-10-21: regression test for MULTIPLEDURATIONS on the Talequah example (small: 2002 Jul-Sep, 10 storms).
 #
-# Usage: test_multidurations.sh [conda_env]          (default RainyDay_Env)
+# Usage: test_multidurations.sh [conda_env|python_path] [aorc_dir]
+#   conda_env  : env name under /opt/anaconda3/envs (default RainyDay_Env) or the full path of a python executable
+#   aorc_dir   : folder with AORC.YYYYMMDD.preciptemp.nc (default: the RAINPATH folder of Examples/Talequah/Talequah.json)
+#   (GP 2026-10-21: portable — the Talequah shapefiles are taken from this repo, so it also runs on Linux)
 #
 # 1. MULTIPLEDURATIONS [1,3,6,24,72], CREATECATALOG true, engine "exact"   -> builds the catalog
 # 2. the same with CATALOGPATH -> that catalog, engine "fast"
@@ -10,17 +13,22 @@
 # Output in tools/logs/multidur_<timestamp>/ (Talequah data from Examples/Talequah/Talequah.json).
 set -e
 ENV="${1:-RainyDay_Env}"
+AORC="${2:-}"
 TOOLSDIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(dirname "$TOOLSDIR")"
-PY="/opt/anaconda3/envs/$ENV/bin/python"
+if [ -x "$ENV" ]; then PY="$ENV"; else PY="/opt/anaconda3/envs/$ENV/bin/python"; fi
 OUT="$TOOLSDIR/logs/multidur_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$OUT"
 export RAINYDAY_CATALOG_ENGINE="${RAINYDAY_CATALOG_ENGINE:-batchfft}"
 
-"$PY" - "$REPO/Examples/Talequah/Talequah.json" "$OUT" <<'PYEOF'
+"$PY" - "$REPO/Examples/Talequah/Talequah.json" "$OUT" "$AORC" <<'PYEOF'
 import json, os, sys
-src, out = sys.argv[1:3]
+src, out, aorc = sys.argv[1:4]
 b = json.load(open(src))
+shp = os.path.join(os.path.dirname(src), "Shapefiles")
+b.update(DOMAINSHP=os.path.join(shp, "Talequah_transposition_domain.shp"), WATERSHEDSHP=os.path.join(shp, "Talequah_basin.shp"))
+if aorc:
+    b["RAINPATH"] = os.path.join(aorc, "AORC.*.preciptemp.nc")
 b.update(FREQANALYSIS="true", DIAGNOSTICPLOTS="false", NYEARS=100, NREALIZATIONS=5, UNCERTAINTY="all_realizations",
          RETURNLEVELS=[2, 5, 10, 25, 50, 100], SCENARIOS="false", DURATIONCORRECTION="false", DURATION=72)
 md = [1, 3, 6, 24, 72]
