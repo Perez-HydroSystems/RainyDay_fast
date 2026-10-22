@@ -10,8 +10,9 @@
 > 3. **Table transposition engine** (`MULTIDURATIONENGINE "table"`): the basin sums are pre-computed per storm with
 >    FFTs, and RainyDay's exact sums are evaluated only for the candidate windows.
 >
-> **Status:** in development. See `CLAUDE.md` for the rules and the validation matrix. The RainyDay_mod description
-> follows.
+> **Status:** in development. **`README_CHANGES.md` lists every change with respect to the original RainyDay**
+> (inherited from RainyDay_mod and new here). See `CLAUDE.md` for the rules and the validation matrix. The RainyDay_mod
+> description follows.
 
 ## RainyDay_mod
 
