@@ -69,7 +69,9 @@ def window_stack(catrain, substeps, check=False):
     T = catrain.shape[0]
     nwin = [T - s + 1 for s in substeps]
     offsets = np.cumsum([0] + nwin).astype(np.int64)
-    c = np.nancumsum(catrain, axis=0, dtype=float)                 # exactly what rolling_sum computes, once
+    # c = np.nancumsum(catrain, axis=0, dtype=float)               # exactly what rolling_sum computes, once
+    c = np.empty(catrain.shape, dtype=np.float64)                   # same IEEE operations, compiled (checked below)
+    _nancumsum64(catrain, c)
     allwin = np.empty((int(offsets[-1]),) + catrain.shape[1:], dtype=np.float32)
     for j, s in enumerate(substeps):
         o = int(offsets[j])
@@ -85,12 +87,67 @@ def window_stack(catrain, substeps, check=False):
     return allwin, offsets, c
 
 
+@jit(nopython=True)          # no fastmath
+def _nancumsum64(a, c):
+    # np.nancumsum(a, axis=0, dtype=float): NaN -> +0, float64(a[t]) added sequentially along time
+    T, H, W = a.shape
+    for y in range(H):
+        for x in range(W):
+            v = a[0, y, x]
+            c[0, y, x] = np.float64(v) if v == v else 0.
+    for t in range(1, T):
+        for y in range(H):
+            for x in range(W):
+                v = a[t, y, x]
+                c[t, y, x] = c[t - 1, y, x] + (np.float64(v) if v == v else 0.)
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 # 2. exact zero rule
 # ---------------------------------------------------------------------------------------------------------------------
 def zero_maps(allwin, offsets, mh, mw):
     """zero[j, y, x] = np.all(allwin[offsets[j]:offsets[j+1], y:y+mh, x:x+mw] < 0.5) for every anchor (y, x) of the
     array ((H-mh+1) x (W-mw+1)); exact (integer counts of cells that are not < 0.5 in some window)."""
+    H, W = allwin.shape[1:]
+    zero = np.empty((len(offsets) - 1, H - mh + 1, W - mw + 1), dtype=np.bool_)
+    _zero_maps_nb(allwin, offsets, mh, mw, zero)
+    return zero
+
+
+@jit(nopython=True)          # no fastmath: "not < 0.5" must count NaN as a hit, as np.all(np.less(...))
+def _zero_maps_nb(allwin, offsets, mh, mw, zero):
+    H, W = allwin.shape[1], allwin.shape[2]
+    oh = H - mh + 1
+    ow = W - mw + 1
+    hit = np.empty((H, W), dtype=np.int64)
+    rowcnt = np.empty((H, ow), dtype=np.int64)
+    for j in range(len(offsets) - 1):
+        hit[:, :] = 0
+        for w in range(offsets[j], offsets[j + 1]):
+            for r in range(H):
+                for q in range(W):
+                    if not (allwin[w, r, q] < 0.5):
+                        hit[r, q] = 1
+        for r in range(H):
+            c = 0
+            for q in range(mw):
+                c += hit[r, q]
+            rowcnt[r, 0] = c
+            for x in range(1, ow):
+                c += hit[r, x + mw - 1] - hit[r, x - 1]
+                rowcnt[r, x] = c
+        for x in range(ow):
+            c = 0
+            for r in range(mh):
+                c += rowcnt[r, x]
+            zero[j, 0, x] = c == 0
+            for y in range(1, oh):
+                c += rowcnt[y + mh - 1, x] - rowcnt[y - 1, x]
+                zero[j, y, x] = c == 0
+
+
+def zero_maps_ref(allwin, offsets, mh, mw):
+    """numpy reference of zero_maps (summed-area tables), for tools/verify_fast_sst.py"""
     ndur = len(offsets) - 1
     H, W = allwin.shape[1:]
     zero = np.empty((ndur, H - mh + 1, W - mw + 1), dtype=np.bool_)
@@ -112,11 +169,52 @@ def zero_hours(catrain, mh, mw):
     fl32(C[d-1]) for s = 1) at every cell of the box."""
     T, H, W = catrain.shape
     ok = not bool(np.any((catrain == 0) & np.signbit(catrain)))
-    nz = np.nan_to_num(catrain, nan=0.) != 0
-    sat = np.zeros((T, H + 1, W + 1), dtype=np.int32)
-    np.cumsum(np.cumsum(nz, axis=1, dtype=np.int32), axis=2, out=sat[:, 1:, 1:])
+    zh = np.empty((H - mh + 1, W - mw + 1, T), dtype=np.bool_)
+    _zero_hours_nb(catrain, mh, mw, zh)
+    return zh, ok
+
+
+@jit(nopython=True)          # no fastmath: the NaN tests must stay
+def _zero_hours_nb(catrain, mh, mw, zh):
+    # sliding counts (rows of width mw, then columns of height mh) of the cells that are neither 0 nor NaN
+    T, H, W = catrain.shape
+    oh = H - mh + 1
+    ow = W - mw + 1
+    rowcnt = np.empty((H, ow), dtype=np.int64)
+    for t in range(T):
+        for r in range(H):
+            c = 0
+            for q in range(mw):
+                v = catrain[t, r, q]
+                if v != 0 and v == v:
+                    c += 1
+            rowcnt[r, 0] = c
+            for x in range(1, ow):
+                v = catrain[t, r, x + mw - 1]
+                if v != 0 and v == v:
+                    c += 1
+                v = catrain[t, r, x - 1]
+                if v != 0 and v == v:
+                    c -= 1
+                rowcnt[r, x] = c
+        for x in range(ow):
+            c = 0
+            for r in range(mh):
+                c += rowcnt[r, x]
+            zh[0, x, t] = c == 0
+            for y in range(1, oh):
+                c += rowcnt[y + mh - 1, x] - rowcnt[y - 1, x]
+                zh[y, x, t] = c == 0
+
+
+def zero_hours_ref(catrain, mh, mw):
+    """numpy reference of zero_hours (summed-area tables), for tools/verify_fast_sst.py"""
+    T, H, W = catrain.shape
+    nz = (catrain != 0) & ~np.isnan(catrain)
+    sat = np.zeros((T, H + 1, W + 1), dtype=np.int64)
+    np.cumsum(np.cumsum(nz, axis=1, dtype=np.int64), axis=2, out=sat[:, 1:, 1:])
     cnt = sat[:, mh:, mw:] - sat[:, :-mh, mw:] - sat[:, mh:, :-mw] + sat[:, :-mh, :-mw]
-    return np.ascontiguousarray(np.moveaxis(cnt == 0, 0, -1)), ok
+    return np.ascontiguousarray(np.moveaxis(cnt == 0, 0, -1))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -132,8 +230,7 @@ def anchor_cumsums(catrain, trimmask, chunk=24):
     P = np.empty((oh, ow, T + 1), dtype=np.float64)
     P[:, :, 0] = 0.
     if mh == 1 and mw == 1:
-        h = np.nan_to_num(np.asarray(catrain, dtype=np.float64), nan=0.) * m[0, 0]
-        np.cumsum(np.moveaxis(h, 0, -1), axis=-1, out=P[:, :, 1:])
+        _cumsum_1x1(catrain, float(m[0, 0]), P)
         return P
     # circular cross-correlation on an FFT grid >= (H, W): the anchors that keep the box inside the array (the only
     # ones RainyDay can draw) never wrap, so no padding to H+mh-1 x W+mw-1 is needed
@@ -143,13 +240,27 @@ def anchor_cumsums(catrain, trimmask, chunk=24):
     wk = fft_workers()
     for t0 in range(0, T, chunk):
         t1 = min(T, t0 + chunk)
-        h = np.nan_to_num(np.asarray(catrain[t0:t1], dtype=np.float64), nan=0.)
+        h = np.asarray(catrain[t0:t1], dtype=np.float64)
+        h[np.isnan(h)] = 0.
         full = spfft.irfft2(spfft.rfft2(h, fshape, axes=(1, 2), workers=wk) * kfft, fshape, axes=(1, 2), workers=wk)
         corr = full[:, :oh, :ow]
         for t in range(t1 - t0):
             run += corr[t]
             P[:, :, t0 + t + 1] = run
     return P
+
+
+@jit(nopython=True)
+def _cumsum_1x1(catrain, m, P):
+    T, H, W = catrain.shape
+    for y in range(H):
+        for x in range(W):
+            P[y, x, 0] = 0.
+    for t in range(T):
+        for y in range(H):
+            for x in range(W):
+                v = catrain[t, y, x]
+                P[y, x, t + 1] = P[y, x, t] + (v * m if v == v else 0.)
 
 
 # ---------------------------------------------------------------------------------------------------------------------

@@ -3,7 +3,7 @@ GP 2026-10-22: offline brute-force check of MULTIDURATIONENGINE "table" (Source/
 on real storm-catalog storms.
 
     python tools/verify_fast_sst.py <StormCatalog dir> [--storms N] [--anchors N] [--durs 1 3 6 12 24 48] [--seed S]
-                                    [--all-anchors] [--asm]
+                                    [--all-anchors] [--asm] [--synthetic N]
 
 For N storms (random, default_rng) and N valid transposition anchors per storm (whole bounding box inside the domain,
 the rule of the driver), all sub-durations:
@@ -117,6 +117,37 @@ def asm_checks():
     return ok
 
 
+def synthetic(nstorm, rng):
+    """random storms with zeros, NaNs (missing data, as catrain<0 -> NaN in the driver), -0.0 (dedup disabled) and
+    exact repeats, fractional masks; table vs SSTalt_multidur at every anchor, numba helpers vs numpy references"""
+    ok = []
+    for k in range(nstorm):
+        T, H, W = 30, int(rng.integers(20, 60)), int(rng.integers(20, 60))
+        mh, mw = int(rng.integers(1, 9)), int(rng.integers(1, 9))
+        rain = (rng.gamma(0.3, 2., (T, H, W)) * (rng.random((T, H, W)) < 0.4)).astype(np.float32)
+        rain[rng.random((T, H, W)) < 0.02] = np.nan
+        if k % 3 == 1:
+            rain[rng.random((T, H, W)) < 0.05] = -0.0
+        if k % 3 == 2:
+            rain[5:9] = 0.                                   # whole zero hours: identical windows
+        tm = (rng.random((mh, mw)) * (rng.random((mh, mw)) < 0.8)).astype(np.float32)
+        tm[0, 0] = 1.; tm[-1, -1] = max(tm[-1, -1], 0.1)
+        durs = [1, 2, 3, 5, 8, 13]
+        allwin, off, _ = FST.window_stack(rain, durs, check=True)
+        yy, xx = np.meshgrid(np.arange(H - mh + 1, dtype=np.int32), np.arange(W - mw + 1, dtype=np.int32), indexing="ij")
+        xx, yy = np.ascontiguousarray(xx.ravel()), np.ascontiguousarray(yy.ravel())
+        tab = FST.table_sst(rain, allwin, off, durs, xx, yy, tm, mh, mw)
+        ref = RDF.SSTalt_multidur(allwin, off, xx, yy, tm, mh, mw)
+        r = [np.array_equal(tab.view(np.uint32), ref.view(np.uint32)),
+             np.array_equal(FST.zero_hours(rain, mh, mw)[0], FST.zero_hours_ref(rain, mh, mw)),
+             np.array_equal(FST.zero_maps(allwin, off, mh, mw), FST.zero_maps_ref(allwin, off, mh, mw))]
+        ok += r
+        if not all(r):
+            print(f"synthetic {k}: table {r[0]}, zero_hours {r[1]}, zero_maps {r[2]} ({T}x{H}x{W}, box {mh}x{mw})")
+    print(f"synthetic storms: {nstorm}, all anchors, all checks {'PASS' if all(ok) else 'FAIL'}")
+    return all(ok)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("catalog")
@@ -126,6 +157,7 @@ def main():
     ap.add_argument("--seed", type=int, default=12345)
     ap.add_argument("--all-anchors", action="store_true")
     ap.add_argument("--asm", action="store_true")
+    ap.add_argument("--synthetic", type=int, default=0, help="also N random storms with NaN/-0.0/zero hours")
     a = ap.parse_args()
     FST.ALLOW_OBJECTMODE_SIG[0] = True                                     # this tool calls SSTalt (object mode)
     rng = np.random.default_rng(a.seed)
@@ -142,6 +174,11 @@ def main():
             sel = np.sort(rng.choice(len(xx), size=a.anchors, replace=False))
             xx, yy = xx[sel], yy[sel]
         allwin, off, c = FST.window_stack(rain, a.durs, check=True)        # 1. exits on a mismatch
+        zh_ok = np.array_equal(FST.zero_hours(rain, mh, mw)[0], FST.zero_hours_ref(rain, mh, mw))
+        zm_ok = np.array_equal(FST.zero_maps(allwin, off, mh, mw), FST.zero_maps_ref(allwin, off, mh, mw))
+        res += [zh_ok, zm_ok]
+        if not (zh_ok and zm_ok):
+            print(f"storm {si + 1}: zero_hours ok {zh_ok}, zero_maps ok {zm_ok} (numba vs summed-area reference)")
         t0 = time.perf_counter()
         hist0 = FST.STATS["hist"].copy(); ev0 = FST.STATS["exact_evals"]; br0 = FST.STATS["brute_evals"]
         tab = FST.table_sst(rain, allwin, off, a.durs, xx, yy, tm, mh, mw)
@@ -174,6 +211,8 @@ def main():
           f"brute force {t_bf:.1f} s")
     print(f"FFT basin sums: max |A_fft - A_direct| / eta = {maxerr:.3g} (must be << 1)")
     res.append(maxerr < 1e-2)
+    if a.synthetic:
+        res.append(synthetic(a.synthetic, rng))
     if a.asm:
         res.append(asm_checks())
     print("ALL PASS" if all(res) else f"FAILED ({res.count(False)} of {len(res)})")
