@@ -87,7 +87,7 @@ FreqAnalysis CSVs. No `np.random` call was added, removed or moved. Any differen
   `CATALOGPATH` runs that read a light catalog.
 - **Limits.** `SCENARIOS` needs full catalogs.
 
-### B3. Table transposition engine, `MULTIDURATIONENGINE: "table"` (fix 3). Status: in validation.
+### B3. Table transposition engine, `MULTIDURATIONENGINE: "table"` (fix 3). Status: done and verified.
 - **Why.** For each of about 1.8 million random draws (a storm and a location), RainyDay summed the basin's bounding
   box for each of 344 sub-duration windows. That is about 10¹² operations for a 16,000 km² basin.
 - **What the engine does, per storm:**
@@ -99,9 +99,28 @@ FreqAnalysis CSVs. No `np.random` call was added, removed or moved. Any differen
   - the parent 72 h sum uses the compiled kernel, not object mode;
   - the storm selection is done once per storm.
 - **Verify mode.** `RAINYDAY_VERIFY_TABLE=<fraction>` brute-forces a random sample of draws and stops on any mismatch.
-- **Validation and final timings:** to be added after the merge.
+- **Each distinct location is evaluated once per storm.** Duplicate draws copy the value, which is exact.
+- **Compiled-code identity is checked.** `numba_multimask_calc` is called, not inlined, and has the same machine code in
+  both callers (`tools/verify_fast_sst.py --asm`).
+- **Driver overheads removed** (bit-identical, every engine):
+  - `tracemalloc.start()`, inherited from the original RainyDay (2024), is switched off. It was never read, but it
+    traced every array allocation, about 620 M per run, and took most of the frequency-analysis time.
+    `RAINYDAY_TRACEMALLOC=1` restores it.
+  - `StormSelector` builds one index per storm instead of about 10 boolean scans of `whichstorms`.
+- **Verified:** all 5 matrix shapes ALL PASS. With verify mode at 1 %, about 18,000 brute-forced draws per shape had
+  0 mismatches.
+- **Speed.** On average only 1.15–1.72 exact window sums are needed per draw and duration, instead of 344. That is
+  35–62× fewer sums.
+- **Frequency-analysis time, `"fast"` → `"table"`:**
 
-### B4. Usability for other users, datasets and domains. Status: in development.
+  | Shape | `"fast"` | `"table"` |
+  |---|---|---|
+  | Iowa pixel | 579 s | 36 s |
+  | Iowa 16,000 km² circle | 4,048 s | 69 s |
+  | R10 ellipse | ~9,200 s | 140 s |
+  | Texas HUC | 705 s | 37 s |
+
+### B4. Usability for other users, datasets and domains. Status: done and verified.
 - **`make_domain_crop.py --json RUN.json`.** Takes the data path, variable names, domain and years from the user's
   JSON (any dataset RainyDay reads), and writes a ready-to-run `<stem>_crop.json`.
 - **Compression.** Lossless deflate becomes the default: about 30× smaller, still about 12× faster to read than the
@@ -112,6 +131,37 @@ FreqAnalysis CSVs. No `np.random` call was added, removed or moved. Any differen
 - **`tools/materialize_catalog.py`.** Converts a light catalog to a full one (bit-identical), for scenarios, sharing
   or archiving.
 - **README guide.** "Using RainyDay_fast for a new domain or dataset".
+
+### B6. End-to-end result (2026-10-22, commit `6e9c316`)
+
+**Setup.**
+- All three fixes on: cropped input (deflate 1), light catalog, table engine.
+- Production settings: NYEARS 1000, 1–72 h, 10 return levels, `data_aorcfix2`.
+- The 5 shapes ran in parallel on the Mac M3 Max, for both RainyDay_mod and RainyDay_fast.
+
+**Validation.** `compare_dumps ref_mod final_all --csv-ref`:
+- ALL PASS, 89 checks: every raw depth of every duration bitwise equal, and every CSV byte-identical. That includes
+  the Mac dry-run CSVs used for the 2026-10-21 Ubuntu campaign.
+- `compare_light_catalog`: every storm and variable bitwise equal to RainyDay_mod's full catalogs.
+
+| Shape | RainyDay_mod 9137292 | RainyDay_fast | Speed-up | Catalog size | Peak memory |
+|---|---|---|---|---|---|
+| Talequah (smoke test) | 32 s | 14 s | 2.3× | 300 KB (was 92 MB) | 1.6 GB |
+| Texas HUC 120401020101 | 1,198 s | 149 s | 8.0× | 1.7 MB (was 2.3 GB) | 1.5 GB (was 2.4) |
+| Iowa pixel | 1,436 s | 209 s | 6.9× | 1.7 MB (was 4.0 GB) | 2.2 GB (was 2.9) |
+| Iowa 16,000 km² circle | 4,957 s | 241 s | 20.6× | 1.7 MB (was 4.0 GB) | 2.1 GB (was 2.7) |
+| Iowa R10 ellipse, rotated 45° | 10,066 s | 325 s | 31× | 1.7 MB (was 4.0 GB) | 2.2 GB (was 2.9) |
+
+**What remains in a RainyDay_fast run** (Iowa pixel, 209 s):
+
+| Part | Time |
+|---|---|
+| Catalog scan | 123 s (the FFT itself; reading is no longer a cost) |
+| Catalog write | 22 s |
+| Diagnostics | 22 s (they re-read all storms) |
+| Transposition and frequency analysis | 35 s |
+
+The next levers are batching several basins per scan, or a GPU scan, plus caching the storms for the diagnostics.
 
 ### B5. Validation and profiling tools (all in `tools/` unless noted)
 - **`make_test_jsons.py`, `run_matrix.sh`, `compare_dumps.py`.** The validation matrix against RainyDay_mod:
