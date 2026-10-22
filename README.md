@@ -24,6 +24,9 @@ with an unmodified JSON, changing only `RAINPATH` to `<dst_dir>/AORC.*.preciptem
 RainyDay computes the same grid resolution as on the CONUS files. `--verify` checks every file and the setup values;
 `--deflate 1` stores a lossless compressed copy, about 30× smaller and about 2.5× slower to read. Sizes for 2002–2023:
 Iowa 29 GB and Texas 17 GB uncompressed. Reads are about 25× faster than from the CONUS files.
+Limitation: `ENHANCEDSST` `stochastic`/`deterministic` subsets the intensity file with `rainprop.bndbox`, which is
+the extent of the input file, so those runs are not bit-identical on a crop. They are not verified, and they are not
+used in the campaign.
 
 ### Fix 2: light storm catalog (GP 2026-10-22)
 
