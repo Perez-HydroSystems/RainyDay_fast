@@ -49,9 +49,12 @@ hooks in `RainyDay_Py3.py`). The timers do not change results: Talequah stays bi
 
 **Fix 3, `MULTIDURATIONENGINE "table"` (branch `fast/sst`, `Source/RainyDay_utilities_Py3/fast_sst.py`):**
 - Per storm: the exact float32 window stack (one shared nancumsum, checked bitwise against `rolling_sum` on the first
-  storm), the exact zero rule (per-duration max field + summed-area counts) and float64 FFT running basin sums `P` of the
-  hourly fields. Per draw and duration only the windows with `A >= Amax - tol` are evaluated, exactly, with RainyDay's
-  `numba_multimask_calc` in the loop of `SSTalt_multidur`; `tol = 4(gamma_n+u)Amax + 4 eta` bounds float32 + FFT error.
+  storm), the exact zero rule (per-duration max field + sliding box counts), float64 FFT running basin sums `P` of the
+  hourly fields (spot-checked against direct sums at 4 anchors per storm) and the hours that are 0/NaN on a whole box.
+  Per draw and duration only the windows with `A >= Amax - tol` are evaluated, exactly, with RainyDay's
+  `numba_multimask_calc` in the loop of `SSTalt_multidur`; `tol = 4(gamma_n+u)max(Amax,0) + 4 eta` (n = mh*mw,
+  eta = 1e-8 x the storm's largest basin total) bounds the float32 + FFT error. A candidate that is bitwise identical over
+  the box to the previous evaluated window (both marginal hours 0/NaN on the box) is skipped: same sum.
 - Parent duration: `SSTalt_multidur` with one window instead of `SSTalt` in numba object mode.
 - Driver overheads removed (bit-identical, all engines): `StormSelector` (one index tuple per storm instead of ~10
   boolean scans of `whichstorms`), and `tracemalloc.start()` (never read; it hooked every numpy/NRT allocation,
