@@ -54,6 +54,10 @@ duration in the list, instead of one JSON and one run per duration:
   The same setting also applies to ordinary single-duration runs with `DURATIONCORRECTION` = `"true"` (watershed/box,
   no rescaling or rotation): they now use the compiled kernel by default, with identical results
   (`"MULTIDURATIONENGINE": "exact"` restores the original `SSTalt`).
+- RainyDay_fast (GP 2026-10-22): `"table"` gives the same results bit for bit, much faster on large basins: per storm a
+  float64 FFT table of approximate basin sums selects, for every draw and duration, the few windows that can hold the
+  maximum, and only those are summed exactly with RainyDay's own kernel. The parent duration uses the compiled kernel
+  instead of the object-mode `SSTalt`. See `CLAUDE.md` and `Source/RainyDay_utilities_Py3/fast_sst.py`.
 - Requirements: `FREQANALYSIS` true, `DURATIONCORRECTION` false, every `d <= DURATION` and a multiple of the time step.
   Not supported together with `SCENARIOS`, `ENHANCEDSST`, `ROTATIONANGLE`, `INTENSDISTR` or point/pointlist areas.
 - Regression test: `bash tools/test_multidurations.sh` (Talequah example).

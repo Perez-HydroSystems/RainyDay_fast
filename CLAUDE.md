@@ -47,6 +47,22 @@ python tools/compare_dumps.py ref_mod <variant> [name ...] [--catalogs] [--csv-r
 **Timers:** `RAINYDAY_TIMERS=1` prints a wall-clock table at the end of a run (`Source/RainyDay_utilities_Py3/fast_prof.py`;
 hooks in `RainyDay_Py3.py`). The timers do not change results: Talequah stays bit-identical to `ref_mod`.
 
+**Fix 3, `MULTIDURATIONENGINE "table"` (branch `fast/sst`, `Source/RainyDay_utilities_Py3/fast_sst.py`):**
+- Per storm: the exact float32 window stack (one shared nancumsum, checked bitwise against `rolling_sum` on the first
+  storm), the exact zero rule (per-duration max field + summed-area counts) and float64 FFT running basin sums `P` of the
+  hourly fields. Per draw and duration only the windows with `A >= Amax - tol` are evaluated, exactly, with RainyDay's
+  `numba_multimask_calc` in the loop of `SSTalt_multidur`; `tol = 4(gamma_n+u)Amax + 4 eta` bounds float32 + FFT error.
+- Parent duration: `SSTalt_multidur` with one window instead of `SSTalt` in numba object mode.
+- Driver overheads removed (bit-identical, all engines): `StormSelector` (one index tuple per storm instead of ~10
+  boolean scans of `whichstorms`), and `tracemalloc.start()` (never read; it hooked every numpy/NRT allocation,
+  `RAINYDAY_TRACEMALLOC=1` restores it).
+- Env: `RAINYDAY_VERIFY_TABLE=<fraction>` brute-forces that fraction of the draws of every storm (`default_rng`,
+  `RAINYDAY_VERIFY_SEED`) and aborts on any difference; `RAINYDAY_TABLE_WORKERS` (scipy.fft workers, default 1).
+- Tools: `tools/verify_fast_sst.py <StormCatalog>` (offline brute force at sampled or all anchors, FFT error vs eta,
+  `--asm`: `numba_multimask_calc` called not inlined, same machine code in `SSTalt_multidur` and the table kernel, same
+  summation data flow as the object-mode specialization, no FMA); `tools/bench_fast_sst.py <StormCatalog>` (per-storm
+  timings table vs fast).
+
 # CLAUDE.md — RainyDay GPU/acceleration testbed
 
 ## What this is

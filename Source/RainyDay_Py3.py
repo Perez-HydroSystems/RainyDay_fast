@@ -61,8 +61,14 @@ import RainyDay_utilities_Py3.fast_sst as FST        # GP 2026-10-22: MULTIDURAT
 import warnings
 warnings.filterwarnings("ignore")
 
-import tracemalloc
-tracemalloc.start()
+# GP 2026-10-22: RainyDay_fast: tracemalloc traced every allocation (numpy arrays and numba NRT arrays, e.g. one per
+# window and draw in SSTalt_multidur) and was never read; most of the time of a 1x1-basin frequency analysis went
+# to tracemalloc's traceback_new. No effect on results. RAINYDAY_TRACEMALLOC=1 restores it.
+# import tracemalloc
+# tracemalloc.start()
+if os.environ.get("RAINYDAY_TRACEMALLOC","").strip() not in ("","0"):
+    import tracemalloc
+    tracemalloc.start()
 
 # Storm-catalog engine for irregular domains (rectangular domains always use catalogNumba):
 #   'batchfft'    : batched multithreaded FFTs over blocks of files (default; verified
