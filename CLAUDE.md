@@ -18,6 +18,8 @@ nothing can reach RainyDay_mod by accident.
 Any difference is a bug.
 
 **Rules:**
+- **Every change is recorded in `README_CHANGES.md`** (what, why, effect on results, commit), as GP requested on
+  2026-10-22.
 - **New code goes in new modules:** `Source/RainyDay_utilities_Py3/fast_*.py` and `tools/`. Edits to
   `RainyDay_Py3.py` are small hooks marked `GP YYYY-MM-DD`, with the old code kept as comments.
 - **Do not add, remove or reorder any `np.random` call.** Verification sampling uses `np.random.default_rng`.
