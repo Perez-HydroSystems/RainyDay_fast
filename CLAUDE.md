@@ -59,6 +59,10 @@ hooks in `RainyDay_Py3.py`). The timers do not change results: Talequah stays bi
 - Driver overheads removed (bit-identical, all engines): `StormSelector` (one index tuple per storm instead of ~10
   boolean scans of `whichstorms`), and `tracemalloc.start()` (never read; it hooked every numpy/NRT allocation,
   `RAINYDAY_TRACEMALLOC=1` restores it).
+- Each distinct anchor of a storm is evaluated once (duplicate draws copy the value; exact).
+- Status (2752ec7, 2026-10-22): `compare_dumps ref_mod fa_table` and `fa_table_v1` (verify 1 %) ALL PASS on all 5 shapes.
+  FA-only seconds, main "fast" -> "table": Talequah 16 -> 6, pixel 579 -> 36, circle 16000 km2 4048 -> 69,
+  R10 ellipse ~9200 (ref_mod minus catalog) -> 140, Texas HUC 705 -> 37.
 - Env: `RAINYDAY_VERIFY_TABLE=<fraction>` brute-forces that fraction of the draws of every storm (`default_rng`,
   `RAINYDAY_VERIFY_SEED`) and aborts on any difference; `RAINYDAY_TABLE_WORKERS` (scipy.fft workers, default 1).
 - Tools: `tools/verify_fast_sst.py <StormCatalog>` (offline brute force at sampled or all anchors, FFT error vs eta,
