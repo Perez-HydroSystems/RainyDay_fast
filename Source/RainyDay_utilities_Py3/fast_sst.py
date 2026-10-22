@@ -110,40 +110,35 @@ def zero_maps(allwin, offsets, mh, mw):
     array ((H-mh+1) x (W-mw+1)); exact (integer counts of cells that are not < 0.5 in some window)."""
     H, W = allwin.shape[1:]
     zero = np.empty((len(offsets) - 1, H - mh + 1, W - mw + 1), dtype=np.bool_)
-    _zero_maps_nb(allwin, offsets, mh, mw, zero)
+    for j in range(len(offsets) - 1):
+        hit = ~(np.max(allwin[offsets[j]:offsets[j + 1]], axis=0) < 0.5)   # NaN -> hit, as np.all(np.less(...))
+        _box_empty_nb(hit, mh, mw, zero[j])
     return zero
 
 
-@jit(nopython=True)          # no fastmath: "not < 0.5" must count NaN as a hit, as np.all(np.less(...))
-def _zero_maps_nb(allwin, offsets, mh, mw, zero):
-    H, W = allwin.shape[1], allwin.shape[2]
+@jit(nopython=True)
+def _box_empty_nb(hit, mh, mw, out):
+    # out[y, x] = no True in hit[y:y+mh, x:x+mw] (sliding integer counts: rows of width mw, then columns of height mh)
+    H, W = hit.shape
     oh = H - mh + 1
     ow = W - mw + 1
-    hit = np.empty((H, W), dtype=np.int64)
     rowcnt = np.empty((H, ow), dtype=np.int64)
-    for j in range(len(offsets) - 1):
-        hit[:, :] = 0
-        for w in range(offsets[j], offsets[j + 1]):
-            for r in range(H):
-                for q in range(W):
-                    if not (allwin[w, r, q] < 0.5):
-                        hit[r, q] = 1
-        for r in range(H):
-            c = 0
-            for q in range(mw):
-                c += hit[r, q]
-            rowcnt[r, 0] = c
-            for x in range(1, ow):
-                c += hit[r, x + mw - 1] - hit[r, x - 1]
-                rowcnt[r, x] = c
-        for x in range(ow):
-            c = 0
-            for r in range(mh):
-                c += rowcnt[r, x]
-            zero[j, 0, x] = c == 0
-            for y in range(1, oh):
-                c += rowcnt[y + mh - 1, x] - rowcnt[y - 1, x]
-                zero[j, y, x] = c == 0
+    for r in range(H):
+        c = 0
+        for q in range(mw):
+            c += hit[r, q]
+        rowcnt[r, 0] = c
+        for x in range(1, ow):
+            c += np.int64(hit[r, x + mw - 1]) - np.int64(hit[r, x - 1])
+            rowcnt[r, x] = c
+    for x in range(ow):
+        c = 0
+        for r in range(mh):
+            c += rowcnt[r, x]
+        out[0, x] = c == 0
+        for y in range(1, oh):
+            c += rowcnt[y + mh - 1, x] - rowcnt[y - 1, x]
+            out[y, x] = c == 0
 
 
 def zero_maps_ref(allwin, offsets, mh, mw):
@@ -180,31 +175,32 @@ def _zero_hours_nb(catrain, mh, mw, zh):
     T, H, W = catrain.shape
     oh = H - mh + 1
     ow = W - mw + 1
+    nz = np.empty(W, dtype=np.int64)
     rowcnt = np.empty((H, ow), dtype=np.int64)
+    cnt = np.empty((oh, ow), dtype=np.int64)
     for t in range(T):
         for r in range(H):
+            for q in range(W):
+                v = catrain[t, r, q]
+                nz[q] = (v != 0) & (v == v)
             c = 0
             for q in range(mw):
-                v = catrain[t, r, q]
-                if v != 0 and v == v:
-                    c += 1
+                c += nz[q]
             rowcnt[r, 0] = c
             for x in range(1, ow):
-                v = catrain[t, r, x + mw - 1]
-                if v != 0 and v == v:
-                    c += 1
-                v = catrain[t, r, x - 1]
-                if v != 0 and v == v:
-                    c -= 1
+                c += nz[x + mw - 1] - nz[x - 1]
                 rowcnt[r, x] = c
         for x in range(ow):
-            c = 0
-            for r in range(mh):
-                c += rowcnt[r, x]
-            zh[0, x, t] = c == 0
-            for y in range(1, oh):
-                c += rowcnt[y + mh - 1, x] - rowcnt[y - 1, x]
-                zh[y, x, t] = c == 0
+            cnt[0, x] = 0
+        for r in range(mh):
+            for x in range(ow):
+                cnt[0, x] += rowcnt[r, x]
+        for y in range(1, oh):
+            for x in range(ow):
+                cnt[y, x] = cnt[y - 1, x] + rowcnt[y + mh - 1, x] - rowcnt[y - 1, x]
+        for y in range(oh):
+            for x in range(ow):
+                zh[y, x, t] = cnt[y, x] == 0
 
 
 def zero_hours_ref(catrain, mh, mw):
