@@ -2117,6 +2117,12 @@ if DoDiagnostics:
 # locations) do not depend on the duration, so all durations share them; only the per-storm rainfall field differs
 # (rolling sums of d hours and the max over windows, as SSTalt(durcheck=True)). Validated configuration only.
 subdurs=[]
+# GP 2026-10-21: engine for every duration-corrected resampling (the shorter durations of MULTIPLEDURATIONS and single
+# runs with DURATIONCORRECTION true, watershed/box, no rescaling/rotation). "fast" (default): compiled SSTalt_multidur,
+# verified bit-identical to "exact" and to the old code; "exact": the original SSTalt (numba object mode).
+mdengine=str(cardinfo.get("MULTIDURATIONENGINE","fast")).lower()
+if mdengine not in ('exact','fast'):
+    sys.exit("MULTIDURATIONENGINE must be 'exact' or 'fast'")
 if multidurations is not None:
     if FreqAnalysis==False:
         sys.exit("MULTIPLEDURATIONS needs FREQANALYSIS 'true'")
@@ -2140,11 +2146,10 @@ if multidurations is not None:
         if not np.isclose(d*60./rainprop.timeres,np.round(d*60./rainprop.timeres)):
             sys.exit("MULTIPLEDURATIONS: "+RainyDay.durtag(d)+" h is not a multiple of the time resolution ("+str(rainprop.timeres)+" min)")
         substeps.append(int(np.round(d*60./rainprop.timeres)))
-    # "fast" (default): one compiled pass for all shorter durations (SSTalt_multidur), verified bit-identical to "exact"
-    # and to separate runs; "exact": the original SSTalt (object mode) once per duration
-    mdengine=str(cardinfo.get("MULTIDURATIONENGINE","fast")).lower()
-    if mdengine not in ('exact','fast'):
-        sys.exit("MULTIDURATIONENGINE must be 'exact' or 'fast'")
+    # (MULTIDURATIONENGINE is now read above, for single duration-corrected runs too)
+    # mdengine=str(cardinfo.get("MULTIDURATIONENGINE","fast")).lower()
+    # if mdengine not in ('exact','fast'):
+    #     sys.exit("MULTIDURATIONENGINE must be 'exact' or 'fast'")
     if CreateCatalog:
         # a separate CATALOGPATH run reads the masks from the written catalog and filters storms by file-name year/month:
         # make sure this run uses exactly the same masks and storms
@@ -2557,8 +2562,13 @@ if FreqAnalysis:
                     temprain,whichmultiplier[whichstorms==i,pt],whichstep=RainyDay.SSTalt(passrain,whichx[whichstorms==i,pt],whichy[whichstorms==i,pt],trimmask,maskheight,maskwidth,intensemean=intensemean,homemean=homemean,durcheck=durcorrection)
                     whichrain[whichstorms==i,pt]=temprain*rainprop.timeres/60./mnorm 
                 elif areatype.lower()!='pointlist' and areatype.lower()!='point' and rescaletype=='none':
-                    temprain,whichstep[whichstorms==i,pt]=RainyDay.SSTalt(passrain,whichx[whichstorms==i,pt],whichy[whichstorms==i,pt],trimmask,maskheight,maskwidth,durcheck=durcorrection)                
-                    whichrain[whichstorms==i,pt]=temprain*rainprop.timeres/60./mnorm 
+                    if durcorrection and mdengine=='fast':
+                        # GP 2026-10-21: single duration-corrected run with the compiled kernel (one duration),
+                        # bit-identical to SSTalt(durcheck=True); whichstep (not used by any output) stays 0
+                        temprain=RainyDay.SSTalt_multidur(np.ascontiguousarray(passrain,dtype='float32'),np.array([0,passrain.shape[0]],dtype=np.int64),whichx[whichstorms==i,pt],whichy[whichstorms==i,pt],trimmask,maskheight,maskwidth)[0]
+                    else:
+                        temprain,whichstep[whichstorms==i,pt]=RainyDay.SSTalt(passrain,whichx[whichstorms==i,pt],whichy[whichstorms==i,pt],trimmask,maskheight,maskwidth,durcheck=durcorrection)
+                    whichrain[whichstorms==i,pt]=temprain*rainprop.timeres/60./mnorm
 
                 elif areatype.lower()=='pointlist':
                     if rescaletype=='deterministic':

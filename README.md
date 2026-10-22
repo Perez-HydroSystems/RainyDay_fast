@@ -36,6 +36,9 @@ duration in the list, instead of one JSON and one run per duration:
 - `MULTIDURATIONENGINE`: `"fast"` (default) computes all shorter durations in one compiled pass (`SSTalt_multidur`);
   `"exact"` reuses the original `SSTalt` (object mode) once per duration. Both are bit-identical to separate runs;
   `"fast"` is much faster (all 7 durations of a basin in about the time of one separate short-duration run).
+  The same setting also applies to ordinary single-duration runs with `DURATIONCORRECTION` = `"true"` (watershed/box,
+  no rescaling or rotation): they now use the compiled kernel by default, with identical results
+  (`"MULTIDURATIONENGINE": "exact"` restores the original `SSTalt`).
 - Requirements: `FREQANALYSIS` true, `DURATIONCORRECTION` false, every `d <= DURATION` and a multiple of the time step.
   Not supported together with `SCENARIOS`, `ENHANCEDSST`, `ROTATIONANGLE`, `INTENSDISTR` or point/pointlist areas.
 - Regression test: `bash tools/test_multidurations.sh` (Talequah example).

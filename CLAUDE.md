@@ -236,6 +236,14 @@ Hook: `RAINYDAY_DUMP_WHICHRAIN=<dir>` saves the raw transposed depths (`<name>_w
   Texas 8000 km² 1,031 / 3,906 s; Iowa 16000 km² 2,058 / 4,567 s (separate d < 72 runs ~7,000 s). The `fast` gain
   shrinks for large basins because each window then sums a large mask box (~1,500 cells) in compiled code.
 
+**Single duration-corrected runs (GP 2026-10-21).** Without MULTIPLEDURATIONS, a run with DURATIONCORRECTION true
+(watershed/box, no rescaling/rotation) now also calls `SSTalt_multidur` (one duration) when `MULTIDURATIONENGINE` is
+`fast` (default); `exact` keeps the original `SSTalt`. `whichstep` (filled but used by no output) stays 0 in the fast
+path. Verified on the `_aorcfix_test` catalogs (CATALOGPATH, production settings), fast and exact run side by side:
+raw depths bitwise equal and CSVs byte-identical to the old-code runs. Wall time old/fast: Iowa pixel 1 h 595 / 86 s
+(6.9×), pixel 24 h 432 / 73 s (5.9×), Iowa 16000 km² 1 h 879 / 278 s (3.2×). `tools/test_multidurations.sh` ALL PASS
+(its separate 1/6 h runs now use the fast path and still match the exact multi run bitwise).
+
 ## Bugs found & fixed along the way
 
 - `RainyDay_Py3.py` storm-writing loop: `except OSError` silently swallowed
