@@ -45,7 +45,7 @@ ETA_REL = 1e-8
 # candidate-count histogram bins (per draw and duration with a nonzero result): 1, 2, 3-4, 5-8, 9-16, >16, all windows
 HBINS = ("1", "2", "3-4", "5-8", "9-16", ">16", "all")
 
-STATS = dict(storms=0, draws=0, cells=0, zero=0, exact_evals=0, brute_evals=0, hist=np.zeros(len(HBINS), np.int64),
+STATS = dict(storms=0, draws=0, cells=0, zero=0, exact_evals=0, dedup_skips=0, nodedup_storms=0, brute_evals=0, hist=np.zeros(len(HBINS), np.int64),
              verified=0, verified_parent=0, seconds_prep=0., seconds_kernel=0., fft_err=0.)
 _FIRST = {"stack_checked": False, "sig_checked": False}
 
@@ -103,6 +103,22 @@ def zero_maps(allwin, offsets, mh, mw):
     return zero
 
 
+def zero_hours(catrain, mh, mw):
+    """zh[y, x, t] = every cell of the mh x mw box anchored at (y, x) is 0 or NaN in hour t (C order, (H-mh+1) x
+    (W-mw+1) x T), and ok = the storm has no -0.0. Window s of a duration d is then bitwise identical to window s-1
+    over the box when zh[y, x, s-1] and zh[y, x, s-1+d]: rolling_sum builds window s >= 1 as C[s+d-1] - C[s-1] and
+    window 0 as C[d-1] from the float64 nancumsum C (NaN -> +0, sequential along time), and C[t] = C[t-1] + 0 is exactly
+    C[t-1] (C >= +0 without -0.0 values), so both windows are fl32(C[s+d-2] - C[s-2]) (or fl32(C[d-1] - +0) =
+    fl32(C[d-1]) for s = 1) at every cell of the box."""
+    T, H, W = catrain.shape
+    ok = not bool(np.any((catrain == 0) & np.signbit(catrain)))
+    nz = np.nan_to_num(catrain, nan=0.) != 0
+    sat = np.zeros((T, H + 1, W + 1), dtype=np.int32)
+    np.cumsum(np.cumsum(nz, axis=1, dtype=np.int32), axis=2, out=sat[:, 1:, 1:])
+    cnt = sat[:, mh:, mw:] - sat[:, :-mh, mw:] - sat[:, mh:, :-mw] + sat[:, :-mh, :-mw]
+    return np.ascontiguousarray(np.moveaxis(cnt == 0, 0, -1)), ok
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 # 3. approximate basin sums (running time sums of the hourly basin sums)
 # ---------------------------------------------------------------------------------------------------------------------
@@ -140,7 +156,12 @@ def anchor_cumsums(catrain, trimmask, chunk=24):
 # 4. per-draw kernel (flags of SSTalt_multidur: nopython, fastmath; RainyDay's numba_multimask_calc for every exact sum)
 # ---------------------------------------------------------------------------------------------------------------------
 @jit(nopython=True, fastmath=True)
-def table_kernel(allwin, offsets, steps, zero, P, sstx, ssty, trimmask, maskheight, maskwidth, tolrel, tolabs, hist):
+def table_kernel(allwin, offsets, steps, zero, P, zh, dedup, sstx, ssty, trimmask, maskheight, maskwidth, tolrel,
+                 tolabs, hist):
+    """rainsum[j, k] = SSTalt_multidur(allwin, offsets, sstx, ssty, trimmask, maskheight, maskwidth)[j, k].
+    Candidates: windows with A >= Amax - tol (all windows when more than half qualify). Among them, a window that is
+    bitwise identical over the box to the previous window (dedup, see zero_hours) is skipped when the previous one is
+    evaluated or itself skipped that way: its exact sum is the same value, so the maximum does not change."""
     ndur = len(offsets) - 1
     nreals = len(sstx)
     rainsum = np.zeros((ndur, nreals), dtype=np.float32)
@@ -151,6 +172,7 @@ def table_kernel(allwin, offsets, steps, zero, P, sstx, ssty, trimmask, maskheig
     A = np.empty(maxw, dtype=np.float64)
     nexact = 0
     nzero = 0
+    nskip = 0
     for k in range(0, nreals):
         y = int(ssty[k])
         x = int(sstx[k])
@@ -175,7 +197,6 @@ def table_kernel(allwin, offsets, steps, zero, P, sstx, ssty, trimmask, maskheig
                 doall = 2 * ncand > nw
                 if doall:
                     hist[6] += 1
-                    ncand = nw
                 elif ncand == 1:
                     hist[0] += 1
                 elif ncand == 2:
@@ -188,16 +209,25 @@ def table_kernel(allwin, offsets, steps, zero, P, sstx, ssty, trimmask, maskheig
                     hist[4] += 1
                 else:
                     hist[5] += 1
-                nexact += ncand
                 # the loop of SSTalt_multidur over the candidate windows only (ascending)
                 storesum = 0.
+                covered = False
                 for kk in range(offsets[j], offsets[j + 1]):
-                    if doall or A[kk - offsets[j]] >= thr:
+                    s = kk - offsets[j]
+                    if dedup and covered and s > 0 and zh[y, x, s - 1] and zh[y, x, s - 1 + d]:
+                        if doall or A[s] >= thr:
+                            nskip += 1                  # a candidate whose sum is already in storesum
+                        continue
+                    if doall or A[s] >= thr:
                         tempsum = RDF.numba_multimask_calc(allwin[kk], trimmask, y, x, maskheight, maskwidth) * 1.
                         if tempsum > storesum:
                             storesum = tempsum
+                        nexact += 1
+                        covered = True
+                    else:
+                        covered = False
                 rainsum[j, k] = storesum
-    return rainsum, nexact, nzero
+    return rainsum, nexact, nzero, nskip
 
 
 def tolerances(mh, mw, P):
@@ -220,14 +250,15 @@ def table_sst(catrain, allwin, offsets, steps, sstx, ssty, trimmask, maskheight,
     if np.any(offsets[1:] - offsets[:-1] != catrain.shape[0] - steps + 1):
         sys.exit("MULTIDURATIONENGINE 'table': window counts do not match the storm length")
     zero = zero_maps(allwin, offsets, maskheight, maskwidth)
+    zh, dedup = zero_hours(catrain, maskheight, maskwidth)
     P = anchor_cumsums(catrain, trimmask)
     if not np.all(np.isfinite(P[:, :, -1])):
         sys.exit("MULTIDURATIONENGINE 'table': non-finite basin sums (check the storm catalog)")
     tolrel, tolabs = tolerances(maskheight, maskwidth, P)
     t1 = time.perf_counter()
     hist = np.zeros(len(HBINS), np.int64)
-    rainsum, nexact, nzero = table_kernel(allwin, offsets, steps, zero, P, sstx, ssty, trimmask, int(maskheight),
-                                          int(maskwidth), tolrel, tolabs, hist)
+    rainsum, nexact, nzero, nskip = table_kernel(allwin, offsets, steps, zero, P, zh, dedup, sstx, ssty, trimmask,
+                                                 int(maskheight), int(maskwidth), tolrel, tolabs, hist)
     t2 = time.perf_counter()
     check_signatures()
     STATS["seconds_prep"] += t1 - t0
@@ -237,6 +268,8 @@ def table_sst(catrain, allwin, offsets, steps, sstx, ssty, trimmask, maskheight,
     STATS["cells"] += len(sstx) * (len(offsets) - 1)
     STATS["zero"] += nzero
     STATS["exact_evals"] += nexact
+    STATS["dedup_skips"] += nskip
+    STATS["nodedup_storms"] += 0 if dedup else 1
     STATS["brute_evals"] += len(sstx) * int(offsets[-1])
     STATS["hist"] += hist
     if verify > 0. and len(sstx) > 0:
@@ -348,6 +381,8 @@ def report():
           % (s["storms"], s["cells"], s["zero"], 100. * s["zero"] / max(s["cells"], 1), s["exact_evals"],
              s["exact_evals"] / nz, s["brute_evals"], s["brute_evals"] / max(s["exact_evals"], 1),
              s["seconds_prep"], s["seconds_kernel"]))
+    print("  identical-window candidates skipped: %d; storms without that shortcut (-0.0 values): %d"
+          % (s["dedup_skips"], s["nodedup_storms"]))
     print("  candidates per nonzero draw x duration: " + ", ".join(
         "%s: %d (%.2f%%)" % (b, c, 100. * c / nz) for b, c in zip(HBINS, s["hist"])))
     if s["verified"] or s["verified_parent"]:

@@ -7,7 +7,7 @@ GP 2026-10-22: per-storm benchmark of MULTIDURATIONENGINE "table" vs "fast" on r
 Per storm, --draws locations (default 4550 = production 1000 years x 100 realizations x 400 storms / 22 years / 400)
 drawn uniformly among the valid anchors (np.random.default_rng). Times, in seconds per storm:
   fast : rolling_sum per duration + concatenate + SSTalt_multidur ; parent SSTalt (numba object mode)
-  table: window_stack | zero_maps | anchor_cumsums (FFT) | table_kernel ; parent_sst (compiled)
+  table: window_stack | zero_maps + zero_hours | anchor_cumsums (FFT) | table_kernel ; parent_sst (compiled)
 and checks the two engines bitwise on the same draws. Extrapolate x NSTORMS for a run.
 """
 import argparse
@@ -59,13 +59,14 @@ def main():
         allwin, off, _ = FST.window_stack(rain, a.durs)
         c1 = time.perf_counter()
         zero = FST.zero_maps(allwin, off, mh, mw)
+        zh, dedup = FST.zero_hours(rain, mh, mw)
         c2 = time.perf_counter()
         P = FST.anchor_cumsums(rain, tm)
         c3 = time.perf_counter()
         tolrel, tolabs = FST.tolerances(mh, mw, P)
         hist = np.zeros(len(FST.HBINS), np.int64)
-        tab, nexact, _ = FST.table_kernel(allwin, off, np.asarray(a.durs, np.int64), zero, P, xx, yy, tm, mh, mw,
-                                          tolrel, tolabs, hist)
+        tab, nexact, _, _ = FST.table_kernel(allwin, off, np.asarray(a.durs, np.int64), zero, P, zh, dedup, xx, yy,
+                                             tm, mh, mw, tolrel, tolabs, hist)
         c4 = time.perf_counter()
         t.update(stack=c1 - c0, zero=c2 - c1, fft=c3 - c2, kernel=c4 - c3)
         passrain = np.nansum(rain, axis=0)
