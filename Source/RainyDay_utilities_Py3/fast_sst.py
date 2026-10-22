@@ -48,7 +48,7 @@ ETA_REL = 1e-8
 # candidate-count histogram bins (per draw and duration with a nonzero result): 1, 2, 3-4, 5-8, 9-16, >16, all windows
 HBINS = ("1", "2", "3-4", "5-8", "9-16", ">16", "all")
 
-STATS = dict(storms=0, draws=0, cells=0, zero=0, exact_evals=0, dedup_skips=0, nodedup_storms=0, brute_evals=0,
+STATS = dict(storms=0, draws=0, anchors=0, brute_evals_draws=0, cells=0, zero=0, exact_evals=0, dedup_skips=0, nodedup_storms=0, brute_evals=0,
              hist=np.zeros(len(HBINS), np.int64), verified=0, verified_parent=0, seconds_prep=0., seconds_kernel=0.,
              fft_err=0.)
 _FIRST = {"stack_checked": False}
@@ -387,20 +387,25 @@ def table_sst(catrain, allwin, offsets, steps, sstx, ssty, trimmask, maskheight,
     spot_check(catrain, trimmask, P, tolabs / 4.)
     t1 = time.perf_counter()
     hist = np.zeros(len(HBINS), np.int64)
-    rainsum, nexact, nzero, nskip = table_kernel(allwin, offsets, steps, zero, P, zh, dedup, sstx, ssty, trimmask,
+    # every distinct anchor once (a draw's value depends only on the storm and the anchor), then back to the draws
+    ux, uy, inv = unique_anchors(sstx, ssty)
+    rainsum, nexact, nzero, nskip = table_kernel(allwin, offsets, steps, zero, P, zh, dedup, ux, uy, trimmask,
                                                  int(maskheight), int(maskwidth), tolrel, tolabs, hist)
+    rainsum = np.ascontiguousarray(rainsum[:, inv])
     t2 = time.perf_counter()
     check_signatures()
     STATS["seconds_prep"] += t1 - t0
     STATS["seconds_kernel"] += t2 - t1
     STATS["storms"] += 1
     STATS["draws"] += len(sstx)
-    STATS["cells"] += len(sstx) * (len(offsets) - 1)
+    STATS["anchors"] += len(ux)
+    STATS["cells"] += len(ux) * (len(offsets) - 1)
     STATS["zero"] += nzero
     STATS["exact_evals"] += nexact
     STATS["dedup_skips"] += nskip
     STATS["nodedup_storms"] += 0 if dedup else 1
-    STATS["brute_evals"] += len(sstx) * int(offsets[-1])
+    STATS["brute_evals"] += len(ux) * int(offsets[-1])
+    STATS["brute_evals_draws"] += len(sstx) * int(offsets[-1])
     STATS["hist"] += hist
     if verify > 0. and len(sstx) > 0:
         sel = np.sort(rng.choice(len(sstx), size=max(1, int(np.ceil(verify * len(sstx)))), replace=False))
@@ -440,8 +445,9 @@ def parent_sst(passrain, sstx, ssty, trimmask, maskheight, maskwidth):
     nansum of the float32 catalog); returns None otherwise (caller keeps SSTalt)."""
     if passrain.dtype != np.float32 or trimmask.dtype != np.float32 or sstx.dtype != np.int32:
         return None
-    out = RDF.SSTalt_multidur(np.ascontiguousarray(passrain[None]), np.array([0, 1], dtype=np.int64), sstx, ssty,
-                              trimmask, maskheight, maskwidth)[0]
+    ux, uy, inv = unique_anchors(sstx, ssty)                  # every distinct anchor once
+    out = RDF.SSTalt_multidur(np.ascontiguousarray(passrain[None]), np.array([0, 1], dtype=np.int64), ux, uy,
+                              trimmask, maskheight, maskwidth)[0][inv]
     check_signatures()
     v = verify_fraction()
     if v > 0. and len(sstx) > 0:
@@ -453,6 +459,13 @@ def parent_sst(passrain, sstx, ssty, trimmask, maskheight, maskwidth):
             sys.exit("RAINYDAY_VERIFY_TABLE: PARENT MISMATCH draw %d: compiled %r, SSTalt %r" % (sel[k], out[sel[k]], ref[k]))
         STATS["verified_parent"] += len(sel)
     return out
+
+
+def unique_anchors(sstx, ssty):
+    """distinct (x, y) of the draws (int32, C) and the index of each draw in them"""
+    key = ssty.astype(np.int64) * (int(sstx.max()) + 1 if len(sstx) else 1) + sstx.astype(np.int64)
+    _, first, inv = np.unique(key, return_index=True, return_inverse=True)
+    return np.ascontiguousarray(sstx[first]), np.ascontiguousarray(ssty[first]), inv
 
 
 class StormSelector:
@@ -506,14 +519,15 @@ def report():
     if s["storms"] == 0:
         return
     nz = max(s["cells"] - s["zero"], 1)
-    print("MULTIDURATIONENGINE 'table': %d storms, %d draws x durations, %d zero-rule (%.1f%%); exact window sums %d "
-          "(%.2f per nonzero draw x duration) vs %d brute force (%.1fx fewer); prep %.1f s, kernel %.1f s"
-          % (s["storms"], s["cells"], s["zero"], 100. * s["zero"] / max(s["cells"], 1), s["exact_evals"],
-             s["exact_evals"] / nz, s["brute_evals"], s["brute_evals"] / max(s["exact_evals"], 1),
-             s["seconds_prep"], s["seconds_kernel"]))
+    print("MULTIDURATIONENGINE 'table': %d storms, %d draws at %d distinct anchors, %d anchors x durations, %d zero-rule "
+          "(%.1f%%); exact window sums %d (%.2f per nonzero anchor x duration) vs %d brute force on the draws (%.1fx "
+          "fewer); prep %.1f s, kernel %.1f s"
+          % (s["storms"], s["draws"], s["anchors"], s["cells"], s["zero"], 100. * s["zero"] / max(s["cells"], 1),
+             s["exact_evals"], s["exact_evals"] / nz, s["brute_evals_draws"],
+             s["brute_evals_draws"] / max(s["exact_evals"], 1), s["seconds_prep"], s["seconds_kernel"]))
     print("  identical-window candidates skipped: %d; storms without that shortcut (-0.0 values): %d"
           % (s["dedup_skips"], s["nodedup_storms"]))
-    print("  candidates per nonzero draw x duration: " + ", ".join(
+    print("  candidates per nonzero anchor x duration: " + ", ".join(
         "%s: %d (%.2f%%)" % (b, c, 100. * c / nz) for b, c in zip(HBINS, s["hist"])))
     print("  FFT spot check: max |P_fft - P_direct| / eta = %.3g (must be < 1e-3)" % s["fft_err"])
     if s["verified"] or s["verified_parent"]:
