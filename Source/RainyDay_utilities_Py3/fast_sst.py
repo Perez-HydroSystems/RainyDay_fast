@@ -8,21 +8,23 @@ Bit-identical to the "fast" engine (SSTalt_multidur) and to "exact" (SSTalt). Pe
      arithmetic, checked bitwise on the first storm and in verify mode);
   2. the zero rule of SSTalt / SSTalt_multidur per duration and anchor (every cell of the mh x mw box < 0.5 in every
      window of the duration -> 0), exactly: per-cell max over the windows of the duration, indicator "not < 0.5",
-     summed-area table (integer counts) -> zero[j, y, x] = (count == 0);
+     sliding integer box counts -> zero[j, y, x] = (count == 0);
   3. approximate basin sums of every window at every anchor, A[w] = P[s+d] - P[s], with P the running time sum
      (float64) of the hourly basin sums (float64 FFT correlation of the hourly fields with trimmask; direct product for
-     a 1x1 mask).
+     a 1x1 mask), spot-checked against direct float64 sums at a few anchors of every storm;
+  4. the hours that are 0/NaN on the whole box of an anchor (zero_hours), which make consecutive windows bitwise equal.
 
   Per draw and duration: zero rule -> 0; else candidates = windows with A >= Amax - tol,
-      tol = 4 (gamma_n + u) Amax + 4 eta,   u = 2^-24, n = mh*mw, gamma_n = n u / (1 - n u),
+      tol = 4 (gamma_n + u) max(Amax, 0) + 4 eta,   u = 2^-24, n = mh*mw, gamma_n = n u / (1 - n u),
       eta = 1e-8 * (largest storm-total basin sum of the storm),
   (all windows when more than half qualify). The exact float32 sum of a window differs from its A by at most
   (gamma_n + u) Amax + eta (float32 products and summation in any order, float32 rounding of the window field, float64
   FFT and cumulative sums), so the window that holds the exact maximum is always a candidate. The candidates are
   evaluated with RainyDay's own numba_multimask_calc (the same compiled specialization SSTalt_multidur uses: float32
   2-D C window from the same 3-D C stack, float32 2-D C mask, int32 anchor, int64 mask sizes), in the loop of
-  SSTalt_multidur (storesum = 0. float64, tempsum = ...*1., strict >, ascending windows, float32 store). Skipping
-  windows that cannot hold the maximum does not change the value.
+  SSTalt_multidur (storesum = 0. float64, tempsum = ...*1., strict >, ascending windows, float32 store), except
+  candidates bitwise identical over the box to the previous evaluated window (4.). Skipping windows that cannot hold
+  the maximum, or whose sum is already in storesum, does not change the value.
 
   Parent duration (no duration correction): SSTalt_multidur(passrain[None], [0, 1], ...)[0], the compiled kernel with
   one window, instead of SSTalt in numba object mode (same zero rule, same sum, max(0, sum) = sum for passrain >= 0).
@@ -33,6 +35,7 @@ Verification: env RAINYDAY_VERIFY_TABLE=<fraction> brute-forces a random subset 
 """
 import os
 import sys
+import time
 
 import numpy as np
 import scipy.fft as spfft
@@ -45,9 +48,10 @@ ETA_REL = 1e-8
 # candidate-count histogram bins (per draw and duration with a nonzero result): 1, 2, 3-4, 5-8, 9-16, >16, all windows
 HBINS = ("1", "2", "3-4", "5-8", "9-16", ">16", "all")
 
-STATS = dict(storms=0, draws=0, cells=0, zero=0, exact_evals=0, dedup_skips=0, nodedup_storms=0, brute_evals=0, hist=np.zeros(len(HBINS), np.int64),
-             verified=0, verified_parent=0, seconds_prep=0., seconds_kernel=0., fft_err=0.)
-_FIRST = {"stack_checked": False, "sig_checked": False}
+STATS = dict(storms=0, draws=0, cells=0, zero=0, exact_evals=0, dedup_skips=0, nodedup_storms=0, brute_evals=0,
+             hist=np.zeros(len(HBINS), np.int64), verified=0, verified_parent=0, seconds_prep=0., seconds_kernel=0.,
+             fft_err=0.)
+_FIRST = {"stack_checked": False}
 
 
 def verify_fraction():
@@ -296,7 +300,7 @@ def table_kernel(allwin, offsets, steps, zero, P, zh, dedup, sstx, ssty, trimmas
                     A[s] = P[y, x, s + d] - P[y, x, s]
                     if A[s] > amax:
                         amax = A[s]
-                thr = amax - (tolrel * amax + tolabs)
+                thr = amax - (tolrel * (amax if amax > 0. else 0.) + tolabs)
                 ncand = 0
                 for s in range(0, nw):
                     if A[s] >= thr:
@@ -344,11 +348,29 @@ def tolerances(mh, mw, P):
     return 4. * (gamma + U32), 4. * eta
 
 
+def spot_check(catrain, trimmask, P, eta, nanch=4):
+    """direct float64 running basin sums at a few random anchors (default_rng) must match P to within eta / 1000
+    (the FFT error is ~1e-8 eta on the validation storms; the candidate tolerance assumes <= eta)"""
+    mh, mw = trimmask.shape
+    oh, ow = P.shape[:2]
+    rng = _rng()
+    m = np.asarray(trimmask, dtype=np.float64)
+    worst = 0.
+    for _ in range(nanch):
+        y, x = int(rng.integers(0, oh)), int(rng.integers(0, ow))
+        h = np.asarray(catrain[:, y:y + mh, x:x + mw], dtype=np.float64)
+        h[np.isnan(h)] = 0.
+        direct = np.cumsum(np.einsum("tij,ij->t", h, m))
+        worst = max(worst, float(np.max(np.abs(P[y, x, 1:] - direct))))
+    STATS["fft_err"] = max(STATS["fft_err"], worst / eta if eta > 0. else (0. if worst == 0. else np.inf))
+    if worst > 1e-3 * eta:
+        sys.exit("MULTIDURATIONENGINE 'table': FFT basin sums off by %.3g (eta %.3g); use 'fast'" % (worst, eta))
+
+
 def table_sst(catrain, allwin, offsets, steps, sstx, ssty, trimmask, maskheight, maskwidth, rng=None, verify=0.):
     """rainsum[j, k] (float32) for draws (sstx, ssty) and the durations of the window stack allwin/offsets (steps =
     hours per window, offsets[j+1]-offsets[j] = T-steps[j]+1); bit-identical to
     RainyDay.SSTalt_multidur(allwin, offsets, sstx, ssty, trimmask, maskheight, maskwidth)."""
-    import time
     t0 = time.perf_counter()
     if allwin.dtype != np.float32 or not allwin.flags.c_contiguous or trimmask.dtype != np.float32 \
             or not trimmask.flags.c_contiguous or sstx.dtype != np.int32 or ssty.dtype != np.int32:
@@ -362,6 +384,7 @@ def table_sst(catrain, allwin, offsets, steps, sstx, ssty, trimmask, maskheight,
     if not np.all(np.isfinite(P[:, :, -1])):
         sys.exit("MULTIDURATIONENGINE 'table': non-finite basin sums (check the storm catalog)")
     tolrel, tolabs = tolerances(maskheight, maskwidth, P)
+    spot_check(catrain, trimmask, P, tolabs / 4.)
     t1 = time.perf_counter()
     hist = np.zeros(len(HBINS), np.int64)
     rainsum, nexact, nzero, nskip = table_kernel(allwin, offsets, steps, zero, P, zh, dedup, sstx, ssty, trimmask,
@@ -492,6 +515,7 @@ def report():
           % (s["dedup_skips"], s["nodedup_storms"]))
     print("  candidates per nonzero draw x duration: " + ", ".join(
         "%s: %d (%.2f%%)" % (b, c, 100. * c / nz) for b, c in zip(HBINS, s["hist"])))
+    print("  FFT spot check: max |P_fft - P_direct| / eta = %.3g (must be < 1e-3)" % s["fft_err"])
     if s["verified"] or s["verified_parent"]:
         print("  RAINYDAY_VERIFY_TABLE: %d sub-duration draws and %d parent draws brute-forced, 0 mismatches"
               % (s["verified"], s["verified_parent"]))
