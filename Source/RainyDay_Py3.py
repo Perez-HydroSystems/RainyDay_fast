@@ -55,6 +55,7 @@ from shapely.affinity import translate
 import matplotlib.pyplot as plt
 # import RainyDay_functions as RainyDay
 import RainyDay_utilities_Py3.RainyDay_functions as RainyDay
+import RainyDay_utilities_Py3.fast_prof as FP        # GP 2026-10-22: RAINYDAY_TIMERS wall-clock timers (no effect on results)
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -1745,6 +1746,7 @@ elif transpotype=='nonuniform' or rescaletype!='none':
 # DO YOU WANT TO CREATE DIAGNOSTIC PLOTS?
 #==============================================================================
 #%%
+FP.tic('diagnostics')                                 # GP 2026-10-22: RAINYDAY_TIMERS
 if DoDiagnostics: 
     for f in glob.glob(diagpath+'*.png'):
         os.remove(f)      
@@ -2104,6 +2106,7 @@ if DoDiagnostics:
     plt.tight_layout()
     plt.savefig(diagpath+'CDF_StormCatalog.png',dpi=250)
     plt.close()
+FP.toc('diagnostics')                                 # GP 2026-10-22: RAINYDAY_TIMERS
     
         
 
@@ -2430,10 +2433,13 @@ if FreqAnalysis:
         
    
     # here is the main resampling and transposition loop
+    FP.tic('resampling: total')                       # GP 2026-10-22: RAINYDAY_TIMERS
     for i in np.arange(0,nstorms):
+        FP.tic('resampling: storm read')              # GP 2026-10-22: RAINYDAY_TIMERS
         catrain,_,_,_,_,_,_,_,_,_,_ = RainyDay.readcatalog(stormlist[i])
         catrain = np.array(catrain)
         catrain[np.less(catrain,0.)]=np.nan
+        FP.toc('resampling: storm read')              # GP 2026-10-22: RAINYDAY_TIMERS
         
         if (durationcheck==False and durcorrection==False): 
             print("checking storm catalog duration, and adjusting if needed...")
@@ -2508,15 +2514,18 @@ if FreqAnalysis:
             # because domainmask had been trimmed in place:
             # rndloc=np.random.randint(0,np.sum(np.equal(domainmask,True)),np.sum(whichstorms==i))
             # GP 2026-10-16: NEW: draw uniformly among the valid transposition locations
+            FP.tic('resampling: location draws')      # GP 2026-10-22: RAINYDAY_TIMERS
             rndloc=np.random.randint(0,len(xmask),np.sum(whichstorms==i))
             for pt in np.arange(0,whichx.shape[3]):
                 whichx[whichstorms==i,pt]=xmask[rndloc].reshape(len(xmask[rndloc]))
                 whichy[whichstorms==i,pt]=ymask[rndloc].reshape(len(ymask[rndloc]))
+            FP.toc('resampling: location draws')      # GP 2026-10-22: RAINYDAY_TIMERS
         
         # SET UP MANUAL PDF RESAMPLING
         elif transpotype=='manual':  
             sys.exit("not configured for manually supplied pdf yet!")
     
+        FP.tic('resampling: parent (passrain + SST)') # GP 2026-10-22: RAINYDAY_TIMERS
         if durcorrection:
             passrain=np.array(RainyDay.rolling_sum(catrain, int(duration*60/rainprop.timeres)),dtype='float32')
             
@@ -2622,6 +2631,8 @@ if FreqAnalysis:
                         temprain,whichstep[whichstorms==i,pt]=RainyDay.SSTalt_singlecell(passrain,whichx[whichstorms==i,pt],whichy[whichstorms==i,pt],trimmask,1,1,durcheck=durcorrection)
                         whichrain[whichstorms==i,pt]=temprain*rainprop.timeres/60.
 
+        FP.toc('resampling: parent (passrain + SST)') # GP 2026-10-22: RAINYDAY_TIMERS
+        FP.tic('resampling: sub-durations')           # GP 2026-10-22: RAINYDAY_TIMERS
         # GP 2026-10-21: MULTIPLEDURATIONS: the shorter durations of this storm, same draws (whichx/whichy), exactly as
         # a separate run with DURATIONCORRECTION true: passrain = rolling sums of d hours, SSTalt(durcheck=True)
         if len(subdurs)>0:
@@ -2639,6 +2650,8 @@ if FreqAnalysis:
                 mdrain=RainyDay.SSTalt_multidur(np.ascontiguousarray(np.concatenate(mdwins,axis=0)),mdoff,mdx,mdy,trimmask,maskheight,maskwidth)
                 for jd in range(0,len(subdurs)):
                     whichrain_md[jd][mdsel,0]=mdrain[jd]*rainprop.timeres/60./mnorm
+        FP.toc('resampling: sub-durations')           # GP 2026-10-22: RAINYDAY_TIMERS
+    FP.toc('resampling: total')                       # GP 2026-10-22: RAINYDAY_TIMERS
 
     if (durationcheck==False and durcorrection==False):
         cattime=temptime
@@ -3066,6 +3079,7 @@ if FreqAnalysis:
         # plt.tight_layout()
         # plt.savefig(fullpath+'/'+scenarioname+'_FrequencyAnalysis.png',dpi=250)
         # plt.close('all')
+        FP.tic('frequency: write parent + rank/write sub-durations')   # GP 2026-10-22: RAINYDAY_TIMERS
         RainyDay.write_frequency_outputs(sortrain,exceedp,returnperiod,FreqFile,fullpath+'/'+scenarioname+'_FrequencyAnalysis.png',spreadtype,globals().get('quantilecalc'),nrealizations)
 
         # GP 2026-10-21: MULTIPLEDURATIONS: rank and write every shorter duration to MAINPATH/<SCENARIONAME>_<d>/
@@ -3076,6 +3090,7 @@ if FreqAnalysis:
             mdsort,mdexceed,mdrp=RainyDay.rank_frequency(whichrain_md[jd],calctype,nsimulations,alllevels,globals().get('speclevels'))
             RainyDay.write_frequency_outputs(mdsort,mdexceed,mdrp,mdpath+'/'+mdname+'_FreqAnalysis.csv',mdpath+'/'+mdname+'_FrequencyAnalysis.png',spreadtype,globals().get('quantilecalc'),nrealizations)
             print('MULTIPLEDURATIONS: wrote '+mdpath+'/'+mdname+'_FreqAnalysis.csv')
+        FP.toc('frequency: write parent + rank/write sub-durations')   # GP 2026-10-22: RAINYDAY_TIMERS
             
         
     #################################################################################
@@ -3361,6 +3376,7 @@ import time     # reimporting due to goofy issue with nperyear writing above
 end = time.time()   
 print("RainyDay has successfully finished!")
 print("Elapsed time: "+"{0:0.2f}".format((end - start)/60.)+" minutes")
+FP.report()                                           # GP 2026-10-22: RAINYDAY_TIMERS
 
    
 #################################################################################

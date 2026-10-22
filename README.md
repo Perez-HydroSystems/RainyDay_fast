@@ -1,4 +1,19 @@
-# RainyDay_mod (Perez-HydroSystems)
+# RainyDay_fast (Perez-HydroSystems)
+
+> **RainyDay_fast (GP 2026-10-22)** is a performance playground cloned from RainyDay_mod (commit 9137292).
+>
+> **Goal:** the same results **bit for bit**, much faster, for large campaigns (thousands of runs). It targets the parts
+> of a run that repeat the same work:
+> 1. **Cropped input:** one cropped, uncompressed copy of the AORC files per transposition domain. This avoids
+>    decompressing the CONUS files in every run.
+> 2. **Light storm catalog:** storm metadata only; the rain is read back from the cropped files. No ~4 GB catalog per basin.
+> 3. **Table transposition engine** (`MULTIDURATIONENGINE "table"`): the basin sums are pre-computed per storm with
+>    FFTs, and RainyDay's exact sums are evaluated only for the candidate windows.
+>
+> **Status:** in development. See `CLAUDE.md` for the rules and the validation matrix. The RainyDay_mod description
+> follows.
+
+## RainyDay_mod
 
 > **About this fork.** This is a modified clone of the original RainyDay repository
 > (Daniel B. Wright and the Hydroclimate Extremes Group, https://github.com/HydroclimateExtremesGroup/RainyDay).

@@ -1,3 +1,52 @@
+# RainyDay_fast (GP 2026-10-22)
+
+**This repo is RainyDay_fast**, a performance playground cloned from RainyDay_mod at 9137292. RainyDay_mod is not
+touched. The remote is `fast` = private `Perez-HydroSystems/RainyDay_fast`. There is no `mod`/`origin` remote here, so
+nothing can reach RainyDay_mod by accident.
+
+**Goal:** fixes 1–3, see `README.md` "RainyDay_fast":
+1. cropped, uncompressed input per domain;
+2. light storm catalog;
+3. table transposition engine.
+
+**Hard rule:** results must be **bit-identical** to RainyDay_mod on the same machine and environment. That means:
+- the same catalogs;
+- the same random draws;
+- the same `whichrain`;
+- byte-identical FreqAnalysis CSVs.
+
+Any difference is a bug.
+
+**Rules:**
+- **New code goes in new modules:** `Source/RainyDay_utilities_Py3/fast_*.py` and `tools/`. Edits to
+  `RainyDay_Py3.py` are small hooks marked `GP YYYY-MM-DD`, with the old code kept as comments.
+- **Do not add, remove or reorder any `np.random` call.** Verification sampling uses `np.random.default_rng`.
+- **Commits** are allowed on the `fast/*` branches and on `main` within the approved plan. Push to GitHub (`fast`) only
+  when GP asks.
+- **Large outputs stay out of OneDrive:**
+  - runs, catalogs and dumps go in `/Users/gjperezm/Databases/RainyDay_fast_tests/`;
+  - crops go in `/Users/gjperezm/Databases/AORC_RainyDay/crops/`.
+
+**Validation matrix** (`tools/make_test_jsons.py`, `tools/run_matrix.sh`, `tools/compare_dumps.py`):
+- **Shapes:**
+  - Talequah (smoke test, 30 s);
+  - Iowa `Pixel_r1_A1km2_rot0`;
+  - Iowa `Circular_r1_A16000km2_rot0`;
+  - Iowa `Elliptical_r10_A16000km2_rot45`;
+  - Texas HUC `Basin_raw_Texas_HUC_120401020101`.
+
+  All use production settings: NYEARS 1000, MULTIPLEDURATIONS 1–72 h, 10 return levels, `data_aorcfix2`.
+- **Reference variant `ref_mod`:** RainyDay_mod 9137292 with `RAINYDAY_DUMP_WHICHRAIN` set and the catalogs kept.
+
+```bash
+python tools/make_test_jsons.py <variant> [--rainpath Iowa=DIR HUC_Texas=DIR Talequah=DIR] [--catalog-from ref_mod] [--set KEY=VALUE]
+bash   tools/run_matrix.sh <repo_dir> <variant> [name ...]        # parallel, with dumps, wall time, peak memory
+python tools/compare_dumps.py ref_mod <variant> [name ...] [--catalogs] [--csv-ref <ubuntu_kit/reference_md>]   # must print ALL PASS
+```
+
+**Timers:** `RAINYDAY_TIMERS=1` prints a wall-clock table at the end of a run (`Source/RainyDay_utilities_Py3/fast_prof.py`;
+hooks in `RainyDay_Py3.py`). The timers do not change results: Talequah stays bit-identical to `ref_mod`.
+
 # CLAUDE.md — RainyDay GPU/acceleration testbed
 
 ## What this is
