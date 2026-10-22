@@ -119,15 +119,17 @@ def anchor_cumsums(catrain, trimmask, chunk=24):
         h = np.nan_to_num(np.asarray(catrain, dtype=np.float64), nan=0.) * m[0, 0]
         np.cumsum(np.moveaxis(h, 0, -1), axis=-1, out=P[:, :, 1:])
         return P
-    fshape = (spfft.next_fast_len(H + mh - 1, True), spfft.next_fast_len(W + mw - 1, True))
-    kfft = spfft.rfft2(m[::-1, ::-1], fshape)
+    # circular cross-correlation on an FFT grid >= (H, W): the anchors that keep the box inside the array (the only
+    # ones RainyDay can draw) never wrap, so no padding to H+mh-1 x W+mw-1 is needed
+    fshape = (spfft.next_fast_len(H, True), spfft.next_fast_len(W, True))
+    kfft = np.conj(spfft.rfft2(m, fshape))
     run = np.zeros((oh, ow), dtype=np.float64)
     wk = fft_workers()
     for t0 in range(0, T, chunk):
         t1 = min(T, t0 + chunk)
         h = np.nan_to_num(np.asarray(catrain[t0:t1], dtype=np.float64), nan=0.)
         full = spfft.irfft2(spfft.rfft2(h, fshape, axes=(1, 2), workers=wk) * kfft, fshape, axes=(1, 2), workers=wk)
-        corr = full[:, mh - 1:mh - 1 + oh, mw - 1:mw - 1 + ow]
+        corr = full[:, :oh, :ow]
         for t in range(t1 - t0):
             run += corr[t]
             P[:, :, t0 + t + 1] = run
@@ -290,6 +292,28 @@ def parent_sst(passrain, sstx, ssty, trimmask, maskheight, maskwidth):
     return out
 
 
+class StormSelector:
+    """sel(i) = np.nonzero(whichstorms == i) (C order) for every storm i, from one stable argsort of whichstorms:
+    whichx[sel(i) + (pt,)] is whichx[whichstorms == i, pt] (same elements, same order) without a full boolean scan of
+    whichstorms at every use. Checked against np.nonzero in verify mode (RAINYDAY_VERIFY_TABLE)."""
+
+    def __init__(self, whichstorms, nstorms):
+        flat = whichstorms.ravel()
+        self.shape = whichstorms.shape
+        self.order = np.argsort(flat, kind="stable")          # stable: ascending flat index (C order) within a storm
+        self.bounds = np.searchsorted(flat[self.order], np.arange(int(nstorms) + 1), side="left")
+        self.whichstorms = whichstorms
+
+    def __call__(self, i):
+        i = int(i)
+        sel = np.unravel_index(self.order[self.bounds[i]:self.bounds[i + 1]], self.shape)
+        if verify_fraction() > 0.:
+            ref = np.nonzero(self.whichstorms == i)
+            if len(ref) != len(sel) or not all(np.array_equal(a, b) for a, b in zip(ref, sel)):
+                sys.exit("RAINYDAY_VERIFY_TABLE: StormSelector differs from np.nonzero(whichstorms==%d) (bug)" % i)
+        return sel
+
+
 _RNG = []
 
 
@@ -300,11 +324,16 @@ def _rng():
 
 
 # numba_multimask_calc specialization used by SSTalt_multidur and table_kernel (float32 2-D C window and mask, int32
-# anchor, int64 sizes). Verify mode also calls SSTalt (object mode: int64 anchor), which adds a second one.
+# anchor, int64 sizes). Verify mode (and tools/verify_fast_sst.py, which sets ALLOW_OBJECTMODE_SIG) also calls SSTalt
+# (object mode: int64 anchor), which adds a second one.
+ALLOW_OBJECTMODE_SIG = [False]
+
+
 def check_signatures():
     sigs = [tuple(str(a) for a in s) for s in RDF.numba_multimask_calc.signatures]
     want = ("array(float32, 2d, C)", "array(float32, 2d, C)", "int32", "int32", "int64", "int64")
-    extra = [s for s in sigs if s != want and not (verify_fraction() > 0. and s[2:] == ("int64",) * 4)]
+    allow64 = verify_fraction() > 0. or ALLOW_OBJECTMODE_SIG[0]
+    extra = [s for s in sigs if s != want and not (allow64 and s[2:] == ("int64",) * 4)]
     if want not in sigs or extra:
         sys.exit("MULTIDURATIONENGINE 'table': unexpected numba_multimask_calc specializations %r" % (sigs,))
 
