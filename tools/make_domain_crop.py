@@ -1,32 +1,48 @@
 #!/usr/bin/env python
 """
-GP 2026-10-22: RainyDay_fast Fix 1 -- cropped copy of the daily input files for one transposition domain.
+GP 2026-10-22: RainyDay_fast Fix 1 -- cropped copy of the daily input files for one transposition domain (or a region
+that holds several domains), so that RainyDay gives bit-identical results reading the crop.
 
-    python tools/make_domain_crop.py <src_dir> <domain.shp> <dst_dir> [--years 2002 2023] [--margin 2]
-        [--deflate 0] [--verify] [--watershed SHP ...] [--only-days YYYYMMDD ...] [--workers 4] [--dry-run]
-        [--bench N]
+From a RainyDay JSON (RAINPATH, VARIABLES, DOMAINTYPE/DOMAINSHP or AREA_EXTENT, INCLUDEYEARS, EXCLUDEMONTHS and, for
+--verify, WATERSHEDSHP are taken from it):
+    python tools/make_domain_crop.py --json RUN.json [RUN2.json ...] [--dst DIR] [--json-out OUT.json]
+                                     [--deflate 1] [--verify] [--margin 2] [--workers 4] [--dry-run] [--bench N]
+  -> the crop in DIR (default: <parent of the RAINPATH folder>/crops/<DOMAINSHP name>) and a ready-to-run copy of
+     each JSON with RAINPATH pointing to the crop: <json folder>/<json stem>_crop.json (or --json-out, one JSON).
+     Several JSONs (same RAINPATH and VARIABLES): one crop covering all their domains and years.
+     DIR already holds a crop: the domains must be inside it (else it stops); only missing files are added (same
+     window and compression); --verify checks this run's domain on it. That is how a region crop serves every
+     domain inside it.
+Positional form (no JSON):
+    python tools/make_domain_crop.py <src_dir> <domain.shp> <dst_dir> [--pattern AORC.*.preciptemp.nc]
+        [--years 2002 2023] [--only-days YYYYMMDD ...] [--watershed SHP ...] [--precip RAINRATE --lat latitude
+        --lon longitude] [same options]
 
-Writes <dst_dir>/AORC.YYYYMMDD.preciptemp.nc (same names as the source) so that UNMODIFIED RainyDay, with
-RAINPATH = <dst_dir>/AORC.*.preciptemp.nc, gives bit-identical results to a run on the CONUS files:
-  * the crop window is the cell range RainyDay selects for the domain (find_indices on the float32 shapefile bbox,
-    D:452) plus a margin of at least --margin cells per side. rainprop_setup takes the grid resolution as the MEAN
-    of the coordinate differences over the whole file (F:2805-2806) and that value goes into rastermask/from_origin,
-    so the margins are searched (smallest first) until both means equal the full-file values bitwise (asserted);
-  * every file keeps its 24 time steps, its own time variable (raw doubles + attributes), the exact subset of its
-    own latitude/longitude values (+ attributes), RAINRATE as raw float32 (-9999 kept) with the same attributes and
-    NO _FillValue added (least_significant_digit is copied as an attribute only: passed to createVariable it would
-    re-quantise the data); other data variables (TMP_2maboveground) are dropped -- RainyDay reads only
-    VARIABLES["precip"];
-  * written with netCDF4 (not xarray), to <name>.tmp then renamed (an interrupted run leaves no partial file that
-    matches the RAINPATH glob); existing files are skipped unless --overwrite.
-  * --deflate L: RAINRATE as one deflate-L + shuffle chunk per file (lossless); default 0 = contiguous.
-  * --verify: for EVERY file, RainyDay's readnetcdf (cropped, crop indices) == readnetcdf (source, domain indices):
-    raw values, mask, dtype, times; and once: rainprop_setup resolution/timeres/calendar/units, findsubbox extent,
-    dimensions and coordinates, find_indices (shifted by the crop origin), rastermask of the domain ('simple') and
-    of each --watershed ('fraction') bitwise equal. Differences expected and harmless are printed (dimensions,
-    bndbox, droplist, nodata of the first file).
-  * --bench N: time readnetcdf on N files, source vs crop.
-A manifest (_crop_manifest.json, not matched by the RAINPATH glob) records the source, domain and windows.
+What the input must satisfy (RainyDay's own requirements):
+  * one file per day, the date in the file name (YYYYMMDD, YYYY-MM-DD or YYYY/MM/DD), all time steps of the day in
+    the file (steps x time resolution = 1440 min), a variable named 'time' with units (and calendar);
+  * a regular grid with 1-D latitude and longitude variables (names = VARIABLES latname/longname), the same in every
+    file; longitudes in -180..180 or 0..360 (RainyDay subtracts 360 when max > 180);
+  * the precipitation variable (VARIABLES precip) with dimensions (time, latitude, longitude).
+
+How the crop stays bit-identical:
+  * window = RainyDay's selection of the domain cells (find_indices on the run's inarea: the float32 bounding box of
+    DOMAINSHP, or AREA_EXTENT) plus margins of at least --margin cells, searched until the MEAN coordinate spacing of
+    the cropped file equals that of the full file bitwise (rainprop_setup takes the resolution as that mean and it
+    feeds rastermask); checked with RainyDay's own rainprop_setup/findsubbox on the first file before the rest is cut;
+  * each file keeps all its time steps, its own time variable and the exact subset of its own latitude/longitude
+    (raw values + attributes), the precipitation as raw values with the same dtype and attributes, no _FillValue added
+    (least_significant_digit is copied as an attribute only); other data variables are dropped (RainyDay reads only
+    VARIABLES precip); same file names; written with netCDF4 to <name>.tmp then renamed;
+  * --deflate 1 (default): one zlib level-1 + shuffle chunk per file (lossless); --deflate 0: contiguous, uncompressed
+    (larger, a little faster to read);
+  * _crop_manifest.json (not matched by the RAINPATH glob) records the source, window, margins, the source cells just
+    outside the window (used by RainyDay's coverage check when a run starts) and the domains made/verified with it.
+  * --verify: for EVERY file of each domain's list, RainyDay's readnetcdf on the crop equals readnetcdf on the source
+    (raw values, mask, dtype, times); per domain: rainprop_setup resolution/timeres/calendar/units, findsubbox,
+    find_indices (shifted by the crop origin), rastermask of the domain ('simple') and of the watersheds ('fraction').
+  * When the source files change (e.g. a corrected day), crop again into a new folder (or delete the changed days
+    from the crop and run the same command: missing files are added).
 """
 import argparse
 import glob
@@ -37,6 +53,7 @@ import re
 import shutil
 import sys
 import time
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -46,6 +63,7 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "Source"))
 DATE_RE = r'\d{4}(?:\d{2})?(?:\d{2}|\-\d{2}\-\d{2}|\/\d{2}/\d{2})'          # createfilelist (F:2752)
+MANIFEST = "_crop_manifest.json"
 
 
 def file_date(path):
@@ -68,8 +86,7 @@ def search_window(coord, i0, i1, full_res, mmin, mmax=40):
                 continue
             if mean_res(coord[lo:hi + 1]) == full_res:
                 return lo, hi, a, b
-    # the domain touches the file edge: allow smaller margins there rather than fail
-    for a in range(0, i0 + 1):
+    for a in range(0, i0 + 1):                       # the domain touches the file edge: smaller margins there
         for b in range(0, n - i1):
             if mean_res(coord[i0 - a:i1 + b + 1]) == full_res:
                 return i0 - a, i1 + b, a, b
@@ -81,37 +98,43 @@ def bitwise_equal(x, y):
     if x.shape != y.shape or x.dtype != y.dtype:
         return False
     if x.dtype.kind == 'f':
-        return np.array_equal(x.view(np.dtype('u%d' % x.dtype.itemsize)), y.view(np.dtype('u%d' % y.dtype.itemsize)))
+        u = np.dtype('u%d' % x.dtype.itemsize)
+        return np.array_equal(np.ascontiguousarray(x).view(u), np.ascontiguousarray(y).view(u))
     return np.array_equal(x, y)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# worker: crop one file (and verify it)
+# worker: crop one file (and verify it for every domain that uses it)
 # ---------------------------------------------------------------------------------------------------------------------
 _W = {}
 
 
 def _init_worker(cfg):
+    _W.clear()
     _W.update(cfg)
     if cfg["verify"]:
         import RainyDay_utilities_Py3.RainyDay_functions as RD
         _W["RD"] = RD
 
 
-def _crop_one(src):
+def _crop_one(task):
     import netCDF4 as nc
+    src, pairs = task
     c = _W
     dst = os.path.join(c["dst_dir"], os.path.basename(src))
-    pre, lat, lon = c["vars"]["precip"], c["vars"]["latname"], c["vars"]["longname"]
+    pre, lat, lon = list(c["vars"].values())
     (la0, la1), (lo0, lo1) = c["latwin"], c["lonwin"]
-    out = dict(file=os.path.basename(src), wrote=False, verified=None, msg="")
+    out = dict(file=os.path.basename(src), wrote=False, verified=None, msg="", t_read_src=0., t_read_crop=0.)
     t0 = time.perf_counter()
-    if c["overwrite"] or not os.path.exists(dst):
+    if not os.path.exists(dst):
         with nc.Dataset(src) as s:
             s.set_auto_maskandscale(False)
             flat, flon = s[lat][:], s[lon][:]
             if not (bitwise_equal(flat, c["reflat"]) and bitwise_equal(flon, c["reflon"])):
                 return dict(out, msg="ERROR: latitude/longitude differ from the reference file")
+            if s[pre].dimensions[1:] != (lat, lon):
+                return dict(out, msg="ERROR: %s has dimensions %s, RainyDay needs (time, %s, %s)"
+                            % (pre, s[pre].dimensions, lat, lon))
             tmp = dst + ".tmp"
             with nc.Dataset(tmp, "w", format=s.data_model) as d:
                 d.setncatts({k: s.getncattr(k) for k in s.ncattrs()})
@@ -141,30 +164,72 @@ def _crop_one(src):
             os.replace(tmp, dst)
         out["wrote"] = True
     out["t_write"] = time.perf_counter() - t0
-    if c["verify"]:
+    if c["verify"] and pairs:
         RD = _W["RD"]
-        t1 = time.perf_counter()
-        r1, t_1 = RD.readnetcdf(src, c["vars"], c["idx_full"], dropvars=c["droplist_full"],
-                                calendar=c["calendar"], time_units=c["time_units"])
-        t2 = time.perf_counter()
-        r2, t_2 = RD.readnetcdf(dst, c["vars"], c["idx_crop"], dropvars=c["droplist_crop"],
-                                calendar=c["calendar"], time_units=c["time_units"])
-        t3 = time.perf_counter()
-        ok = (type(r1) is type(r2) and r1.shape == r2.shape and r1.dtype == r2.dtype
-              and bitwise_equal(np.ma.getdata(r1), np.ma.getdata(r2))
-              and np.array_equal(np.ma.getmaskarray(r1), np.ma.getmaskarray(r2))
-              and t_1.dtype == t_2.dtype and np.array_equal(t_1, t_2))
-        out.update(verified=bool(ok), t_read_src=t2 - t1, t_read_crop=t3 - t2,
-                   nmasked=int(np.ma.count_masked(r1)) if np.ma.isMaskedArray(r1) else 0)
+        ok = True
+        for idx_full, idx_crop in pairs:
+            t1 = time.perf_counter()
+            r1, t_1 = RD.readnetcdf(src, c["vars"], idx_full, dropvars=False, calendar=c["calendar"],
+                                    time_units=c["time_units"])
+            t2 = time.perf_counter()
+            r2, t_2 = RD.readnetcdf(dst, c["vars"], idx_crop, dropvars=False, calendar=c["calendar"],
+                                    time_units=c["time_units"])
+            t3 = time.perf_counter()
+            ok &= (type(r1) is type(r2) and r1.shape == r2.shape and r1.dtype == r2.dtype
+                   and bitwise_equal(np.ma.getdata(r1), np.ma.getdata(r2))
+                   and np.array_equal(np.ma.getmaskarray(r1), np.ma.getmaskarray(r2))
+                   and t_1.dtype == t_2.dtype and np.array_equal(t_1, t_2))
+            out["t_read_src"] += t2 - t1; out["t_read_crop"] += t3 - t2
+        out["verified"] = bool(ok)
         if not ok:
             out["msg"] = "VERIFY FAIL: readnetcdf differs"
     return out
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-def global_checks(RD, src0, dst0, variables, inarea, idx_full, latwin, lonwin, domainshp, watersheds):
-    """rainprop_setup / findsubbox / find_indices / rastermask on the first source file vs the first cropped file."""
-    res, ok = [], True
+# run settings
+# ---------------------------------------------------------------------------------------------------------------------
+def domains_from_json(paths):
+    import RainyDay_utilities_Py3.RainyDay_functions as RD
+    import RainyDay_utilities_Py3.fast_io as FIO
+    out = []
+    for p in paths:
+        p = os.path.abspath(p)
+        j = json.load(open(p), object_pairs_hook=OrderedDict)
+        wd = j.get("MAINPATH", os.path.dirname(p))
+        inpath = j["RAINPATH"]
+        inpath = inpath if os.path.isabs(inpath) else os.path.join(wd, inpath)   # RainyDay globs after chdir(MAINPATH)
+        includeyears, excludemonths = FIO.parse_years_months(j)
+        files, _ = RD.createfilelist(inpath, includeyears, excludemonths)
+        inarea, desc = FIO.run_inarea(j)
+        irregular = str(j.get("DOMAINTYPE", "rectangular")).lower() == "irregular"
+        ws = [j["WATERSHEDSHP"]] if str(j.get("POINTAREA", "")).lower() == "watershed" and j.get("WATERSHEDSHP") else []
+        out.append(dict(json=p, cardinfo=j, inpath=os.path.abspath(inpath), variables=dict(j["VARIABLES"]),
+                        inarea=inarea, description=desc, domainshp=j["DOMAINSHP"] if irregular else None,
+                        watersheds=ws, files=[os.path.abspath(f) for f in files],
+                        name=Path(j["DOMAINSHP"]).stem if irregular else "area_" + "_".join("%g" % x for x in inarea)))
+    return out
+
+
+def domains_from_args(a):
+    import shapefile
+    files = sorted(glob.glob(os.path.join(a.src_dir, a.pattern)))
+    files = [f for f in files if a.years[0] <= file_date(f).year <= a.years[1]]
+    if a.only_days:
+        files = [f for f in files if file_date(f).strftime('%Y%m%d') in set(a.only_days)]
+    bb = shapefile.Reader(a.domain_shp).bbox
+    inarea = np.array([bb[0], bb[2], bb[1], bb[3]], dtype='float32')           # D:452-454
+    return [dict(json=None, cardinfo=None, inpath=os.path.abspath(os.path.join(a.src_dir, a.pattern)),
+                 variables={"precip": a.precip, "latname": a.lat, "longname": a.lon}, inarea=inarea,
+                 description="DOMAINSHP " + os.path.abspath(a.domain_shp), domainshp=os.path.abspath(a.domain_shp),
+                 watersheds=a.watershed, files=[os.path.abspath(f) for f in files], name=Path(a.domain_shp).stem)]
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+def domain_checks(RD, src0, dst0, dom, idx_full, latwin, lonwin, full=True):
+    """rainprop_setup / findsubbox (always) and find_indices / rastermask (full) on the first source vs cropped file."""
+    ok = True
+    variables, inarea = dom["variables"], dom["inarea"]
 
     def rep(good, msg):
         nonlocal ok
@@ -175,41 +240,42 @@ def global_checks(RD, src0, dst0, variables, inarea, idx_full, latwin, lonwin, d
     b = RD.rainprop_setup(dst0, None, dict(variables))
     rep(bitwise_equal(np.float64(a[0][0]), np.float64(b[0][0])) and bitwise_equal(np.float64(a[0][1]), np.float64(b[0][1])),
         "rainprop_setup spatialres bitwise %r %r" % (b[0][0], b[0][1]))
-    rep(a[3] == b[3] and type(a[3]) is type(b[3]), "rainprop_setup timeres %r" % (b[3],))
-    rep(a[6] == b[6] and a[7] == b[7], "rainprop_setup calendar/time_units %r %r" % (b[6], b[7]))
-    print("  info  rainprop_setup dimensions %s -> %s, bndbox %s -> %s, droplist %s -> %s, nodata %r -> %r "
-          "(not used by the run)" % (a[1], b[1], [float(x) for x in a[2]], [float(x) for x in b[2]], a[5], b[5], a[4], b[4]))
-
+    rep(a[3] == b[3] and type(a[3]) is type(b[3]) and a[6] == b[6] and a[7] == b[7],
+        "rainprop_setup timeres/calendar/time_units %r %r %r" % (b[3], b[6], b[7]))
+    if full:
+        print("  info  rainprop_setup dimensions %s -> %s, droplist %s -> %s, nodata %r -> %r (not used by the run)"
+              % (a[1], b[1], a[5], b[5], a[4], b[4]))
     fa = RD.findsubbox(inarea, variables, src0)
     fb = RD.findsubbox(inarea, variables, dst0)
-    rep(bitwise_equal(fa[0], fb[0]), "findsubbox subextent %s" % (fb[0],))
-    rep(np.array_equal(fa[1], fb[1]), "findsubbox subdimensions %s" % (fb[1],))
-    rep(bitwise_equal(fa[2].values, fb[2].values) and bitwise_equal(fa[3].values, fb[3].values)
-        and fa[2].attrs == fb[2].attrs and fa[3].attrs == fb[3].attrs, "findsubbox latrange/lonrange values + attrs")
-    off = np.array([latwin[0], latwin[0], lonwin[0], lonwin[0]])
-    rep(np.array_equal(np.array(fa[4]) - off, np.array(fb[4])), "findsubbox indices shifted by the crop origin")
-    ib = RD.find_indices(dst0, inarea, variables)
-    rep(np.array_equal(np.array(idx_full) - off, np.array(ib)), "find_indices %s -> %s" % (list(idx_full), list(ib)))
-
-    for (shp, kind) in [(domainshp, 'simple')] + [(w, 'fraction') for w in watersheds]:
-        ma, mb = [RD.rastermask(shp, SimpleNamespace(subextent=f[0], subdimensions=f[1], spatialres=s[0]), kind)
-                  for f, s in ((fa, a), (fb, b))]
-        rep(bitwise_equal(ma, mb), "rastermask %s %s (%d cells > 0)" % (kind, os.path.basename(shp), int(np.sum(mb > 0))))
+    rep(bitwise_equal(fa[0], fb[0]) and np.array_equal(fa[1], fb[1]) and bitwise_equal(fa[2].values, fb[2].values)
+        and bitwise_equal(fa[3].values, fb[3].values) and fa[2].attrs == fb[2].attrs and fa[3].attrs == fb[3].attrs,
+        "findsubbox extent, dimensions %s, latitude/longitude values + attributes" % (fb[1],))
+    if full:
+        off = np.array([latwin[0], latwin[0], lonwin[0], lonwin[0]])
+        rep(np.array_equal(np.array(fa[4]) - off, np.array(fb[4])), "findsubbox indices shifted by the crop origin")
+        ib = RD.find_indices(dst0, inarea, variables)
+        rep(np.array_equal(np.array(idx_full) - off, np.array(ib)), "find_indices %s -> %s" % (list(idx_full), list(ib)))
+        shapes = ([(dom["domainshp"], 'simple')] if dom["domainshp"] else []) + [(w, 'fraction') for w in dom["watersheds"]]
+        for (shp, kind) in shapes:
+            ma, mb = [RD.rastermask(shp, SimpleNamespace(subextent=f[0], subdimensions=f[1], spatialres=s[0]), kind)
+                      for f, s in ((fa, a), (fb, b))]
+            rep(bitwise_equal(ma, mb), "rastermask %s %s (%d cells > 0)" % (kind, os.path.basename(shp), int(np.sum(mb > 0))))
     return ok
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("src_dir"); ap.add_argument("domain_shp"); ap.add_argument("dst_dir")
+    ap.add_argument("src_dir", nargs="?"); ap.add_argument("domain_shp", nargs="?"); ap.add_argument("dst_dir", nargs="?")
+    ap.add_argument("--json", nargs="+")
+    ap.add_argument("--dst"); ap.add_argument("--json-out")
     ap.add_argument("--pattern", default="AORC.*.preciptemp.nc")
     ap.add_argument("--years", nargs=2, type=int, default=[2002, 2023])
     ap.add_argument("--only-days", nargs="*", default=None)
     ap.add_argument("--margin", type=int, default=2)
-    ap.add_argument("--deflate", type=int, default=0)
+    ap.add_argument("--deflate", type=int, default=1)
     ap.add_argument("--verify", action="store_true")
     ap.add_argument("--watershed", nargs="*", default=[])
     ap.add_argument("--workers", type=int, default=4)
-    ap.add_argument("--overwrite", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--bench", type=int, default=0)
     ap.add_argument("--precip", default="RAINRATE"); ap.add_argument("--lat", default="latitude")
@@ -217,120 +283,202 @@ def main():
     a = ap.parse_args()
 
     import netCDF4 as nc
-    import shapefile
-    variables = {"precip": a.precip, "latname": a.lat, "longname": a.lon}
+    import RainyDay_utilities_Py3.RainyDay_functions as RD
+    import RainyDay_utilities_Py3.fast_io as FIO
 
-    files = sorted(glob.glob(os.path.join(a.src_dir, a.pattern)))
-    files = [f for f in files if a.years[0] <= file_date(f).year <= a.years[1]]
-    if a.only_days:
-        files = [f for f in files if file_date(f).strftime('%Y%m%d') in set(a.only_days)]
+    if a.json:
+        doms = domains_from_json(a.json)
+        if len({d["inpath"] for d in doms}) > 1 or len({tuple(d["variables"].values()) for d in doms}) > 1:
+            sys.exit("all JSONs must have the same RAINPATH and VARIABLES")
+        if a.json_out and len(doms) > 1:
+            sys.exit("--json-out needs exactly one --json")
+    else:
+        if not (a.src_dir and a.domain_shp and a.dst_dir):
+            sys.exit("give --json RUN.json, or <src_dir> <domain.shp> <dst_dir>")
+        doms = domains_from_args(a)
+    variables = doms[0]["variables"]
+    pre, latn, lonn = list(variables.values())
+    inpath = doms[0]["inpath"]
+    src_dir, pattern = os.path.dirname(inpath), os.path.basename(inpath)
+    if os.path.exists(os.path.join(src_dir, MANIFEST)):
+        sys.exit("RAINPATH " + src_dir + " is already a crop: use the JSON whose RAINPATH points to the original files")
+    files = sorted(set(f for d in doms for f in d["files"]))
     if not files:
-        sys.exit("no source files")
+        sys.exit("no input files (RAINPATH %s, INCLUDEYEARS/EXCLUDEMONTHS)" % inpath)
+    if len({os.path.basename(f) for f in files}) != len(files):
+        sys.exit("several input files share a file name: the crop keeps file names, so it can't hold them")
+    dst = a.dst or a.dst_dir
+    if dst is None:
+        if len(doms) > 1:
+            sys.exit("several JSONs: give --dst")
+        dst = os.path.join(os.path.dirname(os.path.abspath(src_dir)), "crops", doms[0]["name"])
+    dst = os.path.abspath(dst)
     ref = files[0]
 
-    # domain window exactly as RainyDay: float32 shapefile bbox (D:452-454) -> find_indices (F:2202)
-    bb = shapefile.Reader(a.domain_shp).bbox
-    inarea = np.array([bb[0], bb[2], bb[1], bb[3]], dtype='float32')
+    # reference grid (find_indices conventions) and the domain windows
     with nc.Dataset(ref) as s:
         s.set_auto_maskandscale(False)
-        reflat, reflon = s[a.lat][:], s[a.lon][:]
+        reflat, reflon = s[latn][:], s[lonn][:]
         nt = len(s["time"])
-    lonv = reflon - 360 if max(reflon) > 180 else reflon
-    lat_inds = np.where((reflat >= inarea[2]) & (reflat <= inarea[3]))[0]
-    lon_inds = np.where((lonv >= inarea[0]) & (lonv <= inarea[1]))[0]
-    idx_full = [lat_inds.min(), lat_inds.max(), lon_inds.min(), lon_inds.max()]
-    yres, xres = mean_res(reflat), mean_res(reflon)
-    wl = search_window(reflat, idx_full[0], idx_full[1], yres, a.margin)
-    wo = search_window(reflon, idx_full[2], idx_full[3], xres, a.margin)
-    if wl is None or wo is None:
-        sys.exit("no crop window reproduces the full-file mean resolution bitwise (lat %s, lon %s)" % (wl, wo))
-    latwin, lonwin = (wl[0], wl[1]), (wo[0], wo[1])
-    assert mean_res(reflat[wl[0]:wl[1] + 1]) == yres and mean_res(reflon[wo[0]:wo[1] + 1]) == xres
-    H, W = wl[1] - wl[0] + 1, wo[1] - wo[0] + 1
+        if reflat.ndim != 1 or reflon.ndim != 1:
+            sys.exit("RainyDay needs 1-D latitude/longitude")
+        if s[pre].dimensions[1:] != (latn, lonn):
+            sys.exit("%s has dimensions %s; RainyDay needs (time, %s, %s)" % (pre, s[pre].dimensions, latn, lonn))
+    shift = max(reflon) > 180
+    lonv = reflon - 360 if shift else reflon
+    for d in doms:
+        d["idx_full"] = [int(x) for x in RD.find_indices(ref, d["inarea"], variables)]
+    union = [min(d["idx_full"][0] for d in doms), max(d["idx_full"][1] for d in doms),
+             min(d["idx_full"][2] for d in doms), max(d["idx_full"][3] for d in doms)]
+    yres, xres = mean_res(reflat), mean_res(lonv)
+
+    man = json.load(open(os.path.join(dst, MANIFEST))) if os.path.exists(os.path.join(dst, MANIFEST)) else None
+    if man is not None:                                      # existing crop: same source, domains inside it
+        if os.path.realpath(man["source"]) != os.path.realpath(src_dir) or man["pattern"] != pattern:
+            sys.exit("%s holds a crop of %s/%s, not of %s" % (dst, man["source"], man["pattern"], inpath))
+        latwin, lonwin = tuple(man["lat_window"]), tuple(man["lon_window"])
+        if a.deflate != man.get("deflate", 0):
+            print("NOTE: the existing crop uses --deflate %s; new files use it too" % man.get("deflate", 0))
+        deflate = man.get("deflate", 0)
+        have = [os.path.join(dst, os.path.basename(f)) for f in files if os.path.exists(os.path.join(dst, os.path.basename(f)))]
+        for d in doms:
+            probs, _ = FIO.crop_coverage_problems(dst, d["inarea"], variables, have[0] if have else ref)
+            if probs:
+                sys.exit("the domain of %s (%s) is not inside the crop %s: %s. Use another --dst (a new crop for this "
+                         "domain, or a region crop that holds all the domains)."
+                         % (d["json"] or "", d["description"], dst, "; ".join(probs)))
+        margins = man.get("margins")
+        print("existing crop %s: window lat %s, lon %s; the domains are inside it" % (dst, latwin, lonwin))
+    else:
+        deflate = a.deflate
+        wl = search_window(reflat, union[0], union[1], yres, a.margin)
+        wo = search_window(lonv, union[2], union[3], xres, a.margin)
+        if wl is None or wo is None:
+            sys.exit("no crop window reproduces the full-file mean resolution bitwise (lat %s, lon %s)" % (wl, wo))
+        latwin, lonwin = (int(wl[0]), int(wl[1])), (int(wo[0]), int(wo[1]))
+        assert mean_res(reflat[wl[0]:wl[1] + 1]) == yres and mean_res(lonv[wo[0]:wo[1] + 1]) == xres
+        if shift and not max(reflon[wo[0]:wo[1] + 1]) > 180:
+            sys.exit("the source longitudes are 0..360 but the crop's would all be <= 180 (RainyDay would treat them "
+                     "differently)")
+        margins = dict(lat=[int(wl[2]), int(wl[3])], lon=[int(wo[2]), int(wo[3])])
+    H, W = latwin[1] - latwin[0] + 1, lonwin[1] - lonwin[0] + 1
+    todo = [f for f in files if not os.path.exists(os.path.join(dst, os.path.basename(f)))]
     bytes_per = nt * H * W * 4 + 8 * (H + W + nt) + 20000
-    total = bytes_per * len(files)
-    probe = Path(a.dst_dir).resolve()
+    probe = Path(dst)
     while not probe.exists():
         probe = probe.parent
     free = shutil.disk_usage(probe).free
-    print("source       %s (%d files %d-%d)" % (a.src_dir, len(files), a.years[0], a.years[1]))
-    print("domain       %s  inarea(float32) %s" % (a.domain_shp, inarea))
-    print("domain idx   lat %d..%d, lon %d..%d (%d x %d cells)" % (idx_full[0], idx_full[1], idx_full[2], idx_full[3],
-                                                                 idx_full[1] - idx_full[0] + 1, idx_full[3] - idx_full[2] + 1))
-    print("crop window  lat %d..%d (margins %d/%d), lon %d..%d (margins %d/%d) -> %d x %d x %d steps"
-          % (wl[0], wl[1], wl[2], wl[3], wo[0], wo[1], wo[2], wo[3], H, W, nt))
+    print("source       %s (%d files, %s .. %s)" % (inpath, len(files), os.path.basename(files[0]), os.path.basename(files[-1])))
+    for d in doms:
+        print("domain       %s  inarea %s  idx %s%s" % (d["description"], d["inarea"], d["idx_full"],
+                                                         ("  (" + d["json"] + ")") if d["json"] else ""))
+    print("crop         %s: lat %d..%d, lon %d..%d (margins %s) -> %d x %d x %d steps, deflate %d"
+          % (dst, latwin[0], latwin[1], lonwin[0], lonwin[1], margins, H, W, nt, deflate))
     print("resolution   yres %r xres %r (bitwise equal to the full file)" % (yres, xres))
-    print("size         %.2f MB per file, %.2f GB total uncompressed%s; free disk %.1f GB"
-          % (bytes_per / 1e6, total / 1e9, " (deflate %d: smaller)" % a.deflate if a.deflate else "", free / 1e9))
+    print("size         %d files to write, %.2f MB per file uncompressed = %.2f GB%s; free disk %.1f GB"
+          % (len(todo), bytes_per / 1e6, bytes_per * len(todo) / 1e9,
+             " (deflate: AORC is typically 10-30x smaller)" if deflate else "", free / 1e9))
     if a.dry_run:
         return
-    if a.deflate == 0 and total > free - 20e9:
+    need = bytes_per * len(todo) * (0.3 if deflate else 1.0)
+    if need > free - 20e9:
         sys.exit("not enough free disk (keeping 20 GB spare)")
-    os.makedirs(a.dst_dir, exist_ok=True)
+    os.makedirs(dst, exist_ok=True)
 
-    RD = None
-    cfg = dict(dst_dir=a.dst_dir, vars=variables, latwin=latwin, lonwin=lonwin, deflate=a.deflate,
-               overwrite=a.overwrite, verify=a.verify, reflat=reflat, reflon=reflon)
-    if a.verify or a.bench:
-        import RainyDay_utilities_Py3.RainyDay_functions as RD
-        # the first file must exist in the crop before the crop-side setup values can be computed
-        _init_worker(dict(cfg, verify=False)); r0 = _crop_one(ref)
-        if r0["msg"]:
-            sys.exit(r0["msg"])
-        dst0 = os.path.join(a.dst_dir, os.path.basename(ref))
-        sa = RD.rainprop_setup(ref, None, dict(variables)); sb = RD.rainprop_setup(dst0, None, dict(variables))
-        cfg.update(idx_full=idx_full, idx_crop=RD.find_indices(dst0, inarea, variables),
-                   droplist_full=sa[5], droplist_crop=sb[5], calendar=sa[6], time_units=sa[7])
+    # first file + RainyDay's own setup functions on it before cutting the rest
+    cfg = dict(dst_dir=dst, vars=variables, latwin=latwin, lonwin=lonwin, deflate=deflate, verify=False,
+               reflat=reflat, reflon=reflon)
+    _init_worker(cfg)
+    r0 = _crop_one((ref, ()))
+    if r0["msg"]:
+        sys.exit(r0["msg"])
+    dst0 = os.path.join(dst, os.path.basename(ref))
+    print("setup check on %s:" % os.path.basename(ref))
+    sa = RD.rainprop_setup(ref, None, dict(variables))
+    for d in doms:
+        if not domain_checks(RD, ref, dst0, d, d["idx_full"], latwin, lonwin, full=False):
+            sys.exit("the crop doesn't reproduce RainyDay's setup values; nothing else was written")
+        d["idx_crop"] = [int(x) for x in RD.find_indices(dst0, d["inarea"], variables)]
+    cfg.update(verify=a.verify, calendar=sa[6], time_units=sa[7])
 
-    manifest = dict(created=str(datetime.now()), tool="tools/make_domain_crop.py", source=os.path.abspath(a.src_dir),
-                    pattern=a.pattern, years=a.years, nfiles=len(files), domain_shp=os.path.abspath(a.domain_shp),
-                    inarea_float32=[float(x) for x in inarea], domain_idx=[int(x) for x in idx_full],
-                    lat_window=[int(x) for x in latwin], lon_window=[int(x) for x in lonwin],
-                    margins=dict(lat=[int(wl[2]), int(wl[3])], lon=[int(wo[2]), int(wo[3])]),
-                    shape=[int(nt), int(H), int(W)], yres=repr(yres), xres=repr(xres), deflate=a.deflate, variables=variables)
-    json.dump(manifest, open(os.path.join(a.dst_dir, "_crop_manifest.json"), "w"), indent=2)
+    nb = dict(lat_before=float(reflat[latwin[0] - 1]) if latwin[0] > 0 else None,
+              lat_after=float(reflat[latwin[1] + 1]) if latwin[1] < len(reflat) - 1 else None,
+              lon_before=float(lonv[lonwin[0] - 1]) if lonwin[0] > 0 else None,
+              lon_after=float(lonv[lonwin[1] + 1]) if lonwin[1] < len(lonv) - 1 else None)
+    man = man or dict(created=str(datetime.now()), tool="tools/make_domain_crop.py", source=os.path.abspath(src_dir),
+                      pattern=pattern, variables=variables, source_shape=[int(len(reflat)), int(len(reflon))],
+                      coord_dtype=str(reflat.dtype), lon_minus_360=bool(shift), lat_window=list(latwin),
+                      lon_window=list(lonwin), margins=margins, neighbors=nb, shape=[int(nt), int(H), int(W)],
+                      yres=repr(yres), xres=repr(xres), deflate=deflate, domains=[])
+    man.setdefault("neighbors", nb)
+    man.setdefault("domains", [])
 
     t0 = time.perf_counter()
-    nbad, nver, nwrote, tsrc, tcrop = 0, 0, 0, 0., 0.
+    nbad, nver, nwrote, tsrc, tcrop, nver_exp = 0, 0, 0, 0., 0., 0
+    domfiles = [set(d["files"]) for d in doms]
+    tasks = []
+    for f in files:
+        pairs = tuple((d["idx_full"], d["idx_crop"]) for d, fs in zip(doms, domfiles) if f in fs) if a.verify else ()
+        if f in todo or pairs:
+            tasks.append((f, pairs))
+            nver_exp += bool(pairs)
     ctx = mp.get_context("spawn")
     with ctx.Pool(a.workers, initializer=_init_worker, initargs=(cfg,)) as pool:
-        for k, r in enumerate(pool.imap(_crop_one, files, chunksize=4)):
+        for k, r in enumerate(pool.imap(_crop_one, tasks, chunksize=4)):
             nwrote += r["wrote"]
             if r["verified"] is not None:
                 nver += r["verified"]; tsrc += r["t_read_src"]; tcrop += r["t_read_crop"]
-            if r["msg"] or r["verified"] is False:
+            if r["msg"]:
                 nbad += 1
                 print("  %s: %s" % (r["file"], r["msg"]), flush=True)
-            if (k + 1) % 200 == 0 or k + 1 == len(files):
+            if (k + 1) % 500 == 0 or k + 1 == len(tasks):
                 el = time.perf_counter() - t0
                 print("  %d/%d files (%d written, %d verified, %d bad) %.0f s, eta %.0f s"
-                      % (k + 1, len(files), nwrote, nver, nbad, el, el / (k + 1) * (len(files) - k - 1)), flush=True)
-    print("done: %d files, %d written, %d bad, %.1f s" % (len(files), nwrote, nbad, time.perf_counter() - t0))
+                      % (k + 1, len(tasks), nwrote, nver, nbad, el, el / (k + 1) * (len(tasks) - k - 1)), flush=True)
+    cropfiles = glob.glob(os.path.join(dst, pattern))
+    print("done: %d files in the crop, %d written now (+ the setup file), %d bad, %.1f s, crop size %.2f GB"
+          % (len(cropfiles), nwrote, nbad, time.perf_counter() - t0, sum(os.path.getsize(p) for p in cropfiles) / 1e9))
+    allok = nbad == 0
     if a.verify:
-        print("readnetcdf per file (worker time): source %.3f s, crop %.4f s (%d files verified bitwise, %d failed)"
-              % (tsrc / max(1, nver), tcrop / max(1, nver), nver, len(files) - nver))
-        dst0 = os.path.join(a.dst_dir, os.path.basename(ref))
-        gok = global_checks(RD, ref, dst0, variables, inarea, idx_full, latwin, lonwin, a.domain_shp, a.watershed)
-        allok = gok and nbad == 0 and nver == len(files)
+        print("readnetcdf per file and domain (worker time): source %.4f s, crop %.4f s (%d files verified bitwise, "
+              "%d expected)" % (tsrc / max(1, nver), tcrop / max(1, nver), nver, nver_exp))
+        for d in doms:
+            print("domain checks: %s" % d["description"])
+            d["verified"] = domain_checks(RD, ref, dst0, d, d["idx_full"], latwin, lonwin, full=True)
+            allok &= d["verified"]
+        allok &= nver == nver_exp
         print("VERIFY ALL PASS" if allok else "VERIFY FAILED")
-        manifest.update(verified=bool(allok), verified_at=str(datetime.now()))
-        json.dump(manifest, open(os.path.join(a.dst_dir, "_crop_manifest.json"), "w"), indent=2)
+    yrs = sorted(file_date(p).year for p in cropfiles)
+    man.update(updated=str(datetime.now()), nfiles=len(cropfiles), years=[yrs[0], yrs[-1]] if yrs else [])
+    for d in doms:
+        entry = dict(description=d["description"], inarea=[float(x) for x in d["inarea"]], source_idx=d["idx_full"],
+                     json=d["json"], nfiles=len(d["files"]))
+        if a.verify:
+            entry.update(verified=bool(d.get("verified")) and nbad == 0, verified_at=str(datetime.now()))
+        man["domains"] = [x for x in man["domains"] if x.get("description") != d["description"]] + [entry]
+    json.dump(man, open(os.path.join(dst, MANIFEST), "w"), indent=2)
     if a.bench:
-        bench(RD, files, a.dst_dir, variables, cfg, a.bench)
-    if nbad:
+        bench(RD, files, dst, variables, doms[0], cfg, a.bench)
+    if not allok:
         sys.exit(1)
+    for d in doms:
+        if d["json"]:
+            outp = a.json_out or os.path.join(os.path.dirname(d["json"]), Path(d["json"]).stem + "_crop.json")
+            j = OrderedDict(d["cardinfo"])
+            j["RAINPATH"] = os.path.join(dst, pattern)
+            json.dump(j, open(outp, "w"), indent=4)
+            print("ready-to-run JSON: %s (RAINPATH %s)" % (outp, j["RAINPATH"]))
 
 
-def bench(RD, files, dst_dir, variables, cfg, n):
-    """Sequential readnetcdf timing (cold-ish: files spread over the record), source vs crop."""
+def bench(RD, files, dst_dir, variables, dom, cfg, n):
+    """Sequential readnetcdf timing, source vs crop (files spread over the record)."""
     rng = np.random.default_rng(0)
     pick = sorted(rng.choice(len(files), size=min(n, len(files)), replace=False))
-    for label, paths, idx, dv in (("source", [files[i] for i in pick], cfg["idx_full"], cfg["droplist_full"]),
-                                  ("crop", [os.path.join(dst_dir, os.path.basename(files[i])) for i in pick],
-                                   cfg["idx_crop"], cfg["droplist_crop"])):
+    for label, paths, idx in (("source", [files[i] for i in pick], dom["idx_full"]),
+                              ("crop", [os.path.join(dst_dir, os.path.basename(files[i])) for i in pick], dom["idx_crop"])):
         t = time.perf_counter()
         for p in paths:
-            RD.readnetcdf(p, variables, idx, dropvars=dv, calendar=cfg["calendar"], time_units=cfg["time_units"])
+            RD.readnetcdf(p, variables, idx, dropvars=False, calendar=cfg["calendar"], time_units=cfg["time_units"])
         dt = time.perf_counter() - t
         print("bench readnetcdf %-6s %d files: %.4f s/file" % (label, len(paths), dt / len(paths)))
 

@@ -233,6 +233,9 @@ else:
 # rain, which is rebuilt from the input files when a storm is read; RainyDay_fast Fix 2, RainyDay_utilities_Py3/fast_io.py).
 # Reading (CATALOGPATH) uses the storm files when they exist, otherwise the light catalog.
 catalogstorage=FIO.parse_catalogstorage(cardinfo.get("CATALOGSTORAGE","full"))
+# GP 2026-10-22: light catalogs rebuild the storm rain from this run's RAINPATH files (matched by file name), not from
+# the paths stored in the catalog (fast_io.py); set before the first catalog read below
+FIO.set_rainpath(cardinfo.get("RAINPATH",None))
 # if CreateCatalog:
 #     try:
 #         os.mkdir(fullpath + '/StormCatalog')
@@ -924,6 +927,8 @@ if CreateCatalog:
     print("creating a new storm catalog...")
     
     flist,nyears=RainyDay.createfilelist(inpath,includeyears,excludemonths)
+    # GP 2026-10-22: RAINPATH is a crop of tools/make_domain_crop.py: stop if this run's domain is not inside it
+    FIO.check_crop_coverage(inpath,inarea,variables,flist,parameterfile)
     if defaultstorms:
         nstorms=nyears*20
   
