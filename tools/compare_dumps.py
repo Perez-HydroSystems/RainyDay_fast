@@ -64,7 +64,10 @@ def main():
         if a.csv_ref:
             for c in sorted(glob.glob(str(tr / f"{n}_*" / f"{n}_*_FreqAnalysis.csv"))):
                 d = Path(c).parent.name.rsplit("_", 1)[1]
-                cands = glob.glob(os.path.join(a.csv_ref, "*", f"{n}_{d}*", f"{n}_{d}*_FreqAnalysis.csv"))
+                # GP 2026-10-22: exact duration folder (<name>_<d> or <name>_<d>h): "_1*" also matched "_12h"
+                # cands = glob.glob(os.path.join(a.csv_ref, "*", f"{n}_{d}*", f"{n}_{d}*_FreqAnalysis.csv"))
+                cands = [p for p in glob.glob(os.path.join(a.csv_ref, "*", f"{n}_{d}*", f"{n}_{d}*_FreqAnalysis.csv"))
+                         if Path(p).parent.name in (f"{n}_{d}", f"{n}_{d}h")]
                 if cands:
                     report(filecmp.cmp(c, cands[0], shallow=False), f"{n}: {Path(c).name} == {cands[0]}")
         if a.catalogs:

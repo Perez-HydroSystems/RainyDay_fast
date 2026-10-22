@@ -56,6 +56,7 @@ import matplotlib.pyplot as plt
 # import RainyDay_functions as RainyDay
 import RainyDay_utilities_Py3.RainyDay_functions as RainyDay
 import RainyDay_utilities_Py3.fast_prof as FP        # GP 2026-10-22: RAINYDAY_TIMERS wall-clock timers (no effect on results)
+import RainyDay_utilities_Py3.fast_io as FIO          # GP 2026-10-22: CATALOGSTORAGE "light" (light storm catalog)
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -228,6 +229,13 @@ if isinstance(catalogpath,str) and catalogpath.strip()!='' and catalogpath.strip
             catalogname=os.path.basename(catalogpath)
 else:
     catalogpath=fullpath+'/StormCatalog/'+catalogname
+# GP 2026-10-22: CATALOGSTORAGE "full" (default: one file per storm, unchanged) | "light" (one small file without the
+# rain, which is rebuilt from the input files when a storm is read; RainyDay_fast Fix 2, RainyDay_utilities_Py3/fast_io.py).
+# Reading (CATALOGPATH) uses the storm files when they exist, otherwise the light catalog.
+catalogstorage=FIO.parse_catalogstorage(cardinfo.get("CATALOGSTORAGE","full"))
+# GP 2026-10-22: light catalogs rebuild the storm rain from this run's RAINPATH files (matched by file name), not from
+# the paths stored in the catalog (fast_io.py); set before the first catalog read below
+FIO.set_rainpath(cardinfo.get("RAINPATH",None))
 # if CreateCatalog:
 #     try:
 #         os.mkdir(fullpath + '/StormCatalog')
@@ -246,17 +254,22 @@ except Exception:
 
 # if you are reusing a storm catalog, identify all the associated files and create a list of them:
 if CreateCatalog==False:
-    stormlist = glob.glob(catalogpath + '_storm_' + '*' + '.nc')
+    # GP 2026-10-22: storm files of a full catalog or the (same-named) virtual storm paths of a light catalog
+    # stormlist = glob.glob(catalogpath + '_storm_' + '*' + '.nc')
+    stormlist = FIO.list_storms(catalogpath, catalogname, catalogstorage)
     stormlist = sorted(stormlist, key=lambda path: RainyDay.extract_storm_number(path, catalogname))
     if len(stormlist)==0:
         sys.exit("You need to create a storm catalog first. No storm files found matching "+catalogpath+"_storm_*.nc")
     else:
         print("Reading an existing storm catalog from "+os.path.dirname(catalogpath)+" ("+str(len(stormlist))+" storm files)")
-        catrain,stormtime,latrange,lonrange,catx,caty,catmax,catmask,domainmask,cattime,timeres=RainyDay.readcatalog(stormlist[-1])
+        # GP 2026-10-22: FIO.readcatalog = RainyDay.readcatalog, or the same tuple from a light catalog
+        # catrain,stormtime,latrange,lonrange,catx,caty,catmax,catmask,domainmask,cattime,timeres=RainyDay.readcatalog(stormlist[-1])
+        catrain,stormtime,latrange,lonrange,catx,caty,catmax,catmask,domainmask,cattime,timeres=FIO.readcatalog(stormlist[-1])
         # warn if the catalog was built with different key settings than this run (the catalog stores its original JSON)
         try:
             import ast
-            with xr.open_dataset(stormlist[-1]) as tempcat:
+            # with xr.open_dataset(stormlist[-1]) as tempcat:
+            with xr.open_dataset(FIO.attrs_path(stormlist[-1])) as tempcat:   # GP 2026-10-22: light catalog file
                 catparams=ast.literal_eval(tempcat.attrs['description'])
             for key in ["DURATION","DOMAINTYPE","DOMAINSHP","POINTAREA","WATERSHEDSHP","POINTLAT","POINTLON"]:
                 if catparams.get(key)!=cardinfo.get(key):
@@ -590,7 +603,10 @@ try:
 except Exception:
     Scenarios=False
     print("You didn't specify 'SCENARIOS', defaulting to 'false', no scenarios will be written!")
-    
+# GP 2026-10-22: scenario writing reads the storm files directly; light catalogs are not supported there
+if Scenarios and (catalogstorage=='light' or (CreateCatalog==False and FIO.is_virtual(stormlist[-1]))):
+    sys.exit("SCENARIOS needs a full storm catalog (CATALOGSTORAGE 'full')")
+
 try:
     padscenarios=cardinfo["PADSCENARIOS"]
     if isinstance(padscenarios, int):
@@ -911,6 +927,8 @@ if CreateCatalog:
     print("creating a new storm catalog...")
     
     flist,nyears=RainyDay.createfilelist(inpath,includeyears,excludemonths)
+    # GP 2026-10-22: RAINPATH is a crop of tools/make_domain_crop.py: stop if this run's domain is not inside it
+    FIO.check_crop_coverage(inpath,inarea,variables,flist,parameterfile)
     if defaultstorms:
         nstorms=nyears*20
   
@@ -1407,6 +1425,10 @@ if CreateCatalog:
     # This part saves each storm as single file #
     _,readtime = RainyDay.readnetcdf(flist[0],variables,idxes,dropvars=droplist,calendar=calendar,time_units=time_units)
     print("Writing Storm Catalog!")
+    if catalogstorage=='light':                       # GP 2026-10-22: CATALOGSTORAGE "light" (fast_io.py)
+        lightcat=FIO.LightCatalogWriter(fullpath+'/StormCatalog/'+catalogname,scenarioname,parameterfile,catmax,catx,caty,cattime,
+                                        latrange,lonrange,catmask,domainmask,nstorms,rainprop.timeres,flist,variables,idxes,
+                                        droplist,calendar,time_units,readtime[0])
     for i in range(nstorms):
         start_time = cattime[i,0]
         end_time   = cattime[i,-1]
@@ -1451,6 +1473,11 @@ if CreateCatalog:
         storm_time = np.datetime_as_string(start_time, unit='D').replace("-","")
         storm_name = fullpath +'/StormCatalog/' + catalogname+'_storm_'+str(i+1) +"_"+ storm_time+".nc"
         print("Writing Storm "+ str(i+1) + " out of " + str(nstorms))
+        # GP 2026-10-22: CATALOGSTORAGE "light": no storm file, only its name and the CRC32 of its rain
+        # (NaN -> -9999 in catrain as writecatalog does)
+        if catalogstorage=='light':
+            lightcat.add(i,catrain,storm_name)
+            continue
         try:
             RainyDay.writecatalog(scenarioname,catrain,\
                                   catmax,\
@@ -1473,10 +1500,14 @@ if CreateCatalog:
                 # storms missing from the catalog with no indication why
                 print("ERROR: failed to write "+storm_name+": "+repr(exc))
                 raise
+    if catalogstorage=='light':                       # GP 2026-10-22: CATALOGSTORAGE "light"
+        print("Light storm catalog written: "+lightcat.close())
     end = time.time()
     print(f"catalog timer: {(end-proc_start)/60.:0.2f} minutes")
 
-    stormlist = glob.glob(fullpath+'/StormCatalog/'+catalogname + '_storm_'+'*' + '.nc')
+    # GP 2026-10-22: storm files or the virtual storm paths of the light catalog
+    # stormlist = glob.glob(fullpath+'/StormCatalog/'+catalogname + '_storm_'+'*' + '.nc')
+    stormlist = FIO.list_storms(fullpath+'/StormCatalog/'+catalogname, catalogname, catalogstorage)
     stormlist = sorted(stormlist, key=lambda path: RainyDay.extract_storm_number(path, catalogname))
 #%%
 #################################################################################
@@ -1818,7 +1849,8 @@ if DoDiagnostics:
     # =============================================================================
     
     for i in np.arange(0,nstorms):
-        plotrain,plottime,_,_,_,_,_,_,_,_,_ = RainyDay.readcatalog(stormlist[i])
+        # plotrain,plottime,_,_,_,_,_,_,_,_,_ = RainyDay.readcatalog(stormlist[i])
+        plotrain,plottime,_,_,_,_,_,_,_,_,_ = FIO.readcatalog(stormlist[i])     # GP 2026-10-22: full or light catalog
         plotrain = plotrain.where(plotrain >= 0) ##Replace the missing flags
         temprain = plotrain.sum(dim = 'time', skipna =True) * rainprop.timeres / 60.0
         # Shift coordinates to the center for plotting. RainyDay coordinates are upper left
@@ -2156,7 +2188,8 @@ if multidurations is not None:
     if CreateCatalog:
         # a separate CATALOGPATH run reads the masks from the written catalog and filters storms by file-name year/month:
         # make sure this run uses exactly the same masks and storms
-        _,_,_,_,_,_,_,mdmask,mddomain,_,_=RainyDay.readcatalog(stormlist[-1])
+        # _,_,_,_,_,_,_,mdmask,mddomain,_,_=RainyDay.readcatalog(stormlist[-1])
+        _,_,_,_,_,_,_,mdmask,mddomain,_,_=FIO.readcatalog(stormlist[-1])     # GP 2026-10-22: full or light catalog
         mdmask=np.array(mdmask)
         mdtrim=np.delete(mdmask,np.where(np.sum(mdmask,axis=0)==0),axis=1)
         mdtrim=np.array(np.delete(mdtrim,np.where(np.sum(mdmask,axis=1)==0),axis=0),dtype='float32')
@@ -2436,7 +2469,8 @@ if FreqAnalysis:
     FP.tic('resampling: total')                       # GP 2026-10-22: RAINYDAY_TIMERS
     for i in np.arange(0,nstorms):
         FP.tic('resampling: storm read')              # GP 2026-10-22: RAINYDAY_TIMERS
-        catrain,_,_,_,_,_,_,_,_,_,_ = RainyDay.readcatalog(stormlist[i])
+        # catrain,_,_,_,_,_,_,_,_,_,_ = RainyDay.readcatalog(stormlist[i])
+        catrain,_,_,_,_,_,_,_,_,_,_ = FIO.readcatalog(stormlist[i])   # GP 2026-10-22: full or light catalog
         catrain = np.array(catrain)
         catrain[np.less(catrain,0.)]=np.nan
         FP.toc('resampling: storm read')              # GP 2026-10-22: RAINYDAY_TIMERS
