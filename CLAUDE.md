@@ -47,16 +47,32 @@ python tools/compare_dumps.py ref_mod <variant> [name ...] [--catalogs] [--csv-r
 **Timers:** `RAINYDAY_TIMERS=1` prints a wall-clock table at the end of a run (`Source/RainyDay_utilities_Py3/fast_prof.py`;
 hooks in `RainyDay_Py3.py`). The timers do not change results: Talequah stays bit-identical to `ref_mod`.
 
-**Fix 1, cropped input** (`tools/make_domain_crop.py`, branch `fast/io`):
-- **Crops:** `/Users/gjperezm/Databases/AORC_RainyDay/crops/<domain>/`. Each crop has a `_crop_manifest.json`.
-- **Grid resolution:** `rainprop_setup` takes it as the **mean** of the coordinate differences over the whole file, so
-  the crop margins are searched until both means equal the CONUS value bitwise.
-- **Run setting:** only `RAINPATH` changes.
+**Fix 1, cropped input** (`tools/make_domain_crop.py`, branch `fast/io`; full workflow in README "Using RainyDay_fast
+for a new domain or dataset"):
+- **Usage:** `make_domain_crop.py --json RUN.json [--dst DIR] [--verify]`.
+  - It reads RAINPATH, VARIABLES, the domain, INCLUDEYEARS/EXCLUDEMONTHS and WATERSHEDSHP from the JSON.
+  - It writes the crop and `<stem>_crop.json`, a copy with RAINPATH pointing at the crop.
+  - `--deflate 1` (lossless) is the default.
+  - An existing `--dst` crop must contain the domain; the tool then only adds missing files and verifies.
+- **Location:** crops go in `/Users/gjperezm/Databases/AORC_RainyDay/crops/<domain>/`. Each crop has a
+  `_crop_manifest.json` with its window, margins and the source cells just outside it.
+- **Grid resolution:** `rainprop_setup` takes it as the **mean** coordinate spacing over the whole file, so the margins
+  are searched until that mean equals the full file's bitwise.
+- **Coverage check:** `FIO.check_crop_coverage`, a hook after `createfilelist`. It stops a run whose domain is not
+  inside the RAINPATH crop.
+- **Not bit-identical on a crop:** `ENHANCEDSST` `stochastic`/`deterministic`, because of `rainprop.bndbox`.
 
 **Fix 2, light catalog** (`Source/RainyDay_utilities_Py3/fast_io.py`, JSON `CATALOGSTORAGE "light"`):
 - **Rebuild:** `rebuild_storm_rain` is a copy of the catalog write loop. If that loop changes, change the copy too,
   then re-run `tools/test_light_rebuild.py` and `tools/compare_light_catalog.py`.
+- **Re-rooting:** the rain comes from **this run's RAINPATH** files (`FIO.set_rainpath`, matched by file name).
+  - The grid is found by an exact coordinate match. The stored paths and indices are only a fallback.
+  - The CRC32 is checked on every rebuild.
+- **SCENARIOS:** stops with a light catalog. `tools/materialize_catalog.py` writes the full catalog, identical to a
+  full run's (`compare_catalogs --rtol 0`).
 - **Hooks:** the `FIO.*` calls in `RainyDay_Py3.py`.
+- **Disk:** delete validated test outputs (`runs/<variant>`, `dumps/<variant>`, temporary crops). The free space is
+  only about 50 GB.
 
 # CLAUDE.md — RainyDay GPU/acceleration testbed
 
