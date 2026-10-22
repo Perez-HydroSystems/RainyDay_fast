@@ -76,6 +76,29 @@ for a new domain or dataset"):
 - **Disk:** delete validated test outputs (`runs/<variant>`, `dumps/<variant>`, temporary crops). The free space is
   only about 50 GB.
 
+**Fix 3, `MULTIDURATIONENGINE "table"` (branch `fast/sst`, `Source/RainyDay_utilities_Py3/fast_sst.py`):**
+- Per storm: the exact float32 window stack (one shared nancumsum, checked bitwise against `rolling_sum` on the first
+  storm), the exact zero rule (per-duration max field + sliding box counts), float64 FFT running basin sums `P` of the
+  hourly fields (spot-checked against direct sums at 4 anchors per storm) and the hours that are 0/NaN on a whole box.
+  Per draw and duration only the windows with `A >= Amax - tol` are evaluated, exactly, with RainyDay's
+  `numba_multimask_calc` in the loop of `SSTalt_multidur`; `tol = 4(gamma_n+u)max(Amax,0) + 4 eta` (n = mh*mw,
+  eta = 1e-8 x the storm's largest basin total) bounds the float32 + FFT error. A candidate that is bitwise identical over
+  the box to the previous evaluated window (both marginal hours 0/NaN on the box) is skipped: same sum.
+- Parent duration: `SSTalt_multidur` with one window instead of `SSTalt` in numba object mode.
+- Driver overheads removed (bit-identical, all engines): `StormSelector` (one index tuple per storm instead of ~10
+  boolean scans of `whichstorms`), and `tracemalloc.start()` (never read; it hooked every numpy/NRT allocation,
+  `RAINYDAY_TRACEMALLOC=1` restores it).
+- Each distinct anchor of a storm is evaluated once (duplicate draws copy the value; exact).
+- Status (2752ec7, 2026-10-22): `compare_dumps ref_mod fa_table` and `fa_table_v1` (verify 1 %) ALL PASS on all 5 shapes.
+  FA-only seconds, main "fast" -> "table": Talequah 16 -> 6, pixel 579 -> 36, circle 16000 km2 4048 -> 69,
+  R10 ellipse ~9200 (ref_mod minus catalog) -> 140, Texas HUC 705 -> 37.
+- Env: `RAINYDAY_VERIFY_TABLE=<fraction>` brute-forces that fraction of the draws of every storm (`default_rng`,
+  `RAINYDAY_VERIFY_SEED`) and aborts on any difference; `RAINYDAY_TABLE_WORKERS` (scipy.fft workers, default 1).
+- Tools: `tools/verify_fast_sst.py <StormCatalog>` (offline brute force at sampled or all anchors, FFT error vs eta,
+  `--asm`: `numba_multimask_calc` called not inlined, same machine code in `SSTalt_multidur` and the table kernel, same
+  summation data flow as the object-mode specialization, no FMA); `tools/bench_fast_sst.py <StormCatalog>` (per-storm
+  timings table vs fast).
+
 # CLAUDE.md — RainyDay GPU/acceleration testbed
 
 ## What this is

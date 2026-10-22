@@ -57,12 +57,19 @@ import matplotlib.pyplot as plt
 import RainyDay_utilities_Py3.RainyDay_functions as RainyDay
 import RainyDay_utilities_Py3.fast_prof as FP        # GP 2026-10-22: RAINYDAY_TIMERS wall-clock timers (no effect on results)
 import RainyDay_utilities_Py3.fast_io as FIO          # GP 2026-10-22: CATALOGSTORAGE "light" (light storm catalog)
+import RainyDay_utilities_Py3.fast_sst as FST        # GP 2026-10-22: MULTIDURATIONENGINE "table" (RainyDay_fast fix 3)
 
 import warnings
 warnings.filterwarnings("ignore")
 
-import tracemalloc
-tracemalloc.start()
+# GP 2026-10-22: RainyDay_fast: tracemalloc traced every allocation (numpy arrays and numba NRT arrays, e.g. one per
+# window and draw in SSTalt_multidur) and was never read; most of the time of a 1x1-basin frequency analysis went
+# to tracemalloc's traceback_new. No effect on results. RAINYDAY_TRACEMALLOC=1 restores it.
+# import tracemalloc
+# tracemalloc.start()
+if os.environ.get("RAINYDAY_TRACEMALLOC","").strip() not in ("","0"):
+    import tracemalloc
+    tracemalloc.start()
 
 # Storm-catalog engine for irregular domains (rectangular domains always use catalogNumba):
 #   'batchfft'    : batched multithreaded FFTs over blocks of files (default; verified
@@ -2156,8 +2163,12 @@ subdurs=[]
 # runs with DURATIONCORRECTION true, watershed/box, no rescaling/rotation). "fast" (default): compiled SSTalt_multidur,
 # verified bit-identical to "exact" and to the old code; "exact": the original SSTalt (numba object mode).
 mdengine=str(cardinfo.get("MULTIDURATIONENGINE","fast")).lower()
-if mdengine not in ('exact','fast'):
-    sys.exit("MULTIDURATIONENGINE must be 'exact' or 'fast'")
+# GP 2026-10-22: "table" (RainyDay_fast, Source/RainyDay_utilities_Py3/fast_sst.py): FFT basin-sum table per storm,
+# exact sums only for the candidate windows; bit-identical to "fast" and "exact"
+# if mdengine not in ('exact','fast'):
+#     sys.exit("MULTIDURATIONENGINE must be 'exact' or 'fast'")
+if mdengine not in ('exact','fast','table'):
+    sys.exit("MULTIDURATIONENGINE must be 'exact', 'fast' or 'table'")
 if multidurations is not None:
     if FreqAnalysis==False:
         sys.exit("MULTIPLEDURATIONS needs FREQANALYSIS 'true'")
@@ -2467,7 +2478,12 @@ if FreqAnalysis:
    
     # here is the main resampling and transposition loop
     FP.tic('resampling: total')                       # GP 2026-10-22: RAINYDAY_TIMERS
+    # GP 2026-10-22: RainyDay_fast: the draws of storm i as one index tuple, wsel = np.nonzero(whichstorms==i) (same
+    # elements, same order), built for all storms from one stable argsort, instead of a new boolean mask of whichstorms
+    # for every use (~10 full scans per storm). Used on the uniform/irregular/watershed/no-rescaling path below.
+    stormsel=FST.StormSelector(whichstorms,nstorms)
     for i in np.arange(0,nstorms):
+        wsel=stormsel(i)                              # GP 2026-10-22
         FP.tic('resampling: storm read')              # GP 2026-10-22: RAINYDAY_TIMERS
         # catrain,_,_,_,_,_,_,_,_,_,_ = RainyDay.readcatalog(stormlist[i])
         catrain,_,_,_,_,_,_,_,_,_,_ = FIO.readcatalog(stormlist[i])   # GP 2026-10-22: full or light catalog
@@ -2549,10 +2565,15 @@ if FreqAnalysis:
             # rndloc=np.random.randint(0,np.sum(np.equal(domainmask,True)),np.sum(whichstorms==i))
             # GP 2026-10-16: NEW: draw uniformly among the valid transposition locations
             FP.tic('resampling: location draws')      # GP 2026-10-22: RAINYDAY_TIMERS
-            rndloc=np.random.randint(0,len(xmask),np.sum(whichstorms==i))
+            # GP 2026-10-22: wsel (same count, same elements and order as whichstorms==i)
+            # rndloc=np.random.randint(0,len(xmask),np.sum(whichstorms==i))
+            # for pt in np.arange(0,whichx.shape[3]):
+            #     whichx[whichstorms==i,pt]=xmask[rndloc].reshape(len(xmask[rndloc]))
+            #     whichy[whichstorms==i,pt]=ymask[rndloc].reshape(len(ymask[rndloc]))
+            rndloc=np.random.randint(0,len(xmask),len(wsel[0]))
             for pt in np.arange(0,whichx.shape[3]):
-                whichx[whichstorms==i,pt]=xmask[rndloc].reshape(len(xmask[rndloc]))
-                whichy[whichstorms==i,pt]=ymask[rndloc].reshape(len(ymask[rndloc]))
+                whichx[wsel+(pt,)]=xmask[rndloc].reshape(len(xmask[rndloc]))
+                whichy[wsel+(pt,)]=ymask[rndloc].reshape(len(ymask[rndloc]))
             FP.toc('resampling: location draws')      # GP 2026-10-22: RAINYDAY_TIMERS
         
         # SET UP MANUAL PDF RESAMPLING
@@ -2608,10 +2629,26 @@ if FreqAnalysis:
                     if durcorrection and mdengine=='fast':
                         # GP 2026-10-21: single duration-corrected run with the compiled kernel (one duration),
                         # bit-identical to SSTalt(durcheck=True); whichstep (not used by any output) stays 0
-                        temprain=RainyDay.SSTalt_multidur(np.ascontiguousarray(passrain,dtype='float32'),np.array([0,passrain.shape[0]],dtype=np.int64),whichx[whichstorms==i,pt],whichy[whichstorms==i,pt],trimmask,maskheight,maskwidth)[0]
+                        # temprain=RainyDay.SSTalt_multidur(np.ascontiguousarray(passrain,dtype='float32'),np.array([0,passrain.shape[0]],dtype=np.int64),whichx[whichstorms==i,pt],whichy[whichstorms==i,pt],trimmask,maskheight,maskwidth)[0]   # GP 2026-10-22: old, whichstorms==i -> wsel
+                        temprain=RainyDay.SSTalt_multidur(np.ascontiguousarray(passrain,dtype='float32'),np.array([0,passrain.shape[0]],dtype=np.int64),whichx[wsel+(pt,)],whichy[wsel+(pt,)],trimmask,maskheight,maskwidth)[0]
+                    # GP 2026-10-22: "table" engine (fast_sst.py): duration-corrected single run with the basin-sum
+                    # table, bit-identical to the line above; whichstep stays 0 as with "fast"
+                    elif durcorrection and mdengine=='table':
+                        # temprain=FST.table_durcorrection(catrain,passrain,int(duration*60/rainprop.timeres),whichx[whichstorms==i,pt],whichy[whichstorms==i,pt],trimmask,maskheight,maskwidth)   # GP 2026-10-22: old, whichstorms==i -> wsel
+                        temprain=FST.table_durcorrection(catrain,passrain,int(duration*60/rainprop.timeres),whichx[wsel+(pt,)],whichy[wsel+(pt,)],trimmask,maskheight,maskwidth)
                     else:
-                        temprain,whichstep[whichstorms==i,pt]=RainyDay.SSTalt(passrain,whichx[whichstorms==i,pt],whichy[whichstorms==i,pt],trimmask,maskheight,maskwidth,durcheck=durcorrection)
-                    whichrain[whichstorms==i,pt]=temprain*rainprop.timeres/60./mnorm
+                        # GP 2026-10-22: "table" engine: the parent duration with the compiled kernel (one window)
+                        # instead of SSTalt in numba object mode, bit-identical; whichstep = 0 as SSTalt(durcheck=False)
+                        # temprain,whichstep[whichstorms==i,pt]=RainyDay.SSTalt(passrain,whichx[whichstorms==i,pt],whichy[whichstorms==i,pt],trimmask,maskheight,maskwidth,durcheck=durcorrection)
+                        temprain=None
+                        if mdengine=='table' and durcorrection==False:
+                            # temprain=FST.parent_sst(passrain,whichx[whichstorms==i,pt],whichy[whichstorms==i,pt],trimmask,maskheight,maskwidth)   # GP 2026-10-22: old, whichstorms==i -> wsel
+                            temprain=FST.parent_sst(passrain,whichx[wsel+(pt,)],whichy[wsel+(pt,)],trimmask,maskheight,maskwidth)
+                        if temprain is None:
+                            # temprain,whichstep[whichstorms==i,pt]=RainyDay.SSTalt(passrain,whichx[whichstorms==i,pt],whichy[whichstorms==i,pt],trimmask,maskheight,maskwidth,durcheck=durcorrection)   # GP 2026-10-22: old, whichstorms==i -> wsel
+                            temprain,whichstep[wsel+(pt,)]=RainyDay.SSTalt(passrain,whichx[wsel+(pt,)],whichy[wsel+(pt,)],trimmask,maskheight,maskwidth,durcheck=durcorrection)
+                    # whichrain[whichstorms==i,pt]=temprain*rainprop.timeres/60./mnorm   # GP 2026-10-22: old, whichstorms==i -> wsel
+                    whichrain[wsel+(pt,)]=temprain*rainprop.timeres/60./mnorm
 
                 elif areatype.lower()=='pointlist':
                     if rescaletype=='deterministic':
@@ -2670,22 +2707,32 @@ if FreqAnalysis:
         # GP 2026-10-21: MULTIPLEDURATIONS: the shorter durations of this storm, same draws (whichx/whichy), exactly as
         # a separate run with DURATIONCORRECTION true: passrain = rolling sums of d hours, SSTalt(durcheck=True)
         if len(subdurs)>0:
-            mdsel=whichstorms==i
-            mdx=whichx[mdsel,0]
-            mdy=whichy[mdsel,0]
+            # GP 2026-10-22: mdsel = wsel (index tuple, same elements and order as whichstorms==i): [mdsel,0] -> [mdsel+(0,)]
+            # mdsel=whichstorms==i
+            # mdx=whichx[mdsel,0]
+            # mdy=whichy[mdsel,0]
+            mdsel=wsel
+            mdx=whichx[mdsel+(0,)]
+            mdy=whichy[mdsel+(0,)]
             if mdengine=='exact':
                 for jd in range(0,len(subdurs)):
                     mdpass=np.array(RainyDay.rolling_sum(catrain, substeps[jd]),dtype='float32')
                     mdrain,_=RainyDay.SSTalt(mdpass,mdx,mdy,trimmask,maskheight,maskwidth,durcheck=True)
-                    whichrain_md[jd][mdsel,0]=mdrain*rainprop.timeres/60./mnorm
+                    whichrain_md[jd][mdsel+(0,)]=mdrain*rainprop.timeres/60./mnorm
+            # GP 2026-10-22: "table" engine (fast_sst.py), bit-identical to "fast" below
+            elif mdengine=='table':
+                mdrain=FST.table_multidur(catrain,substeps,mdx,mdy,trimmask,maskheight,maskwidth)
+                for jd in range(0,len(subdurs)):
+                    whichrain_md[jd][mdsel+(0,)]=mdrain[jd]*rainprop.timeres/60./mnorm
             else:
                 mdwins=[np.array(RainyDay.rolling_sum(catrain, s),dtype='float32') for s in substeps]
                 mdoff=np.cumsum([0]+[w.shape[0] for w in mdwins]).astype(np.int64)
                 mdrain=RainyDay.SSTalt_multidur(np.ascontiguousarray(np.concatenate(mdwins,axis=0)),mdoff,mdx,mdy,trimmask,maskheight,maskwidth)
                 for jd in range(0,len(subdurs)):
-                    whichrain_md[jd][mdsel,0]=mdrain[jd]*rainprop.timeres/60./mnorm
+                    whichrain_md[jd][mdsel+(0,)]=mdrain[jd]*rainprop.timeres/60./mnorm
         FP.toc('resampling: sub-durations')           # GP 2026-10-22: RAINYDAY_TIMERS
     FP.toc('resampling: total')                       # GP 2026-10-22: RAINYDAY_TIMERS
+    FST.report()                                      # GP 2026-10-22: "table" engine statistics (prints nothing otherwise)
 
     if (durationcheck==False and durcorrection==False):
         cattime=temptime
