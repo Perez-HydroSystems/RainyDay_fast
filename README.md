@@ -13,6 +13,32 @@
 > **Status:** in development. See `CLAUDE.md` for the rules and the validation matrix. The RainyDay_mod description
 > follows.
 
+### Fix 1: cropped input (GP 2026-10-22)
+
+```bash
+python tools/make_domain_crop.py <src_dir> <domain.shp> <dst_dir> [--years 2002 2023] [--verify] [--watershed SHP ...]
+```
+
+Writes `<dst_dir>/AORC.YYYYMMDD.preciptemp.nc` (same names) with only the domain's cells plus a small margin. Use it
+with an unmodified JSON, changing only `RAINPATH` to `<dst_dir>/AORC.*.preciptemp.nc`. The margins are chosen so that
+RainyDay computes the same grid resolution as on the CONUS files. `--verify` checks every file and the setup values;
+`--deflate 1` stores a lossless compressed copy, about 30× smaller and about 2.5× slower to read. Sizes for 2002–2023:
+Iowa 29 GB and Texas 17 GB uncompressed. Reads are about 25× faster than from the CONUS files.
+
+### Fix 2: light storm catalog (GP 2026-10-22)
+
+```json
+"CATALOGSTORAGE": "light"
+```
+
+The catalog is one small file, `StormCatalog/<CATALOGNAME>_lightcatalog.nc`, instead of one file per storm. It keeps
+every catalog variable except the rain, the storm file names, the input file list and a CRC32 checksum for each storm.
+When a storm is needed, its rain is rebuilt from the input files exactly as the storm file would hold it; the run stops
+if the checksum differs. Use it with cropped input, since the rebuild reads about 4 daily files per storm. A
+`CATALOGPATH` run reads a light catalog automatically when the folder has no storm files. `SCENARIOS` is not
+supported with light catalogs. Checks: `tools/compare_light_catalog.py <full StormCatalog> <light .nc>` and
+`tools/test_light_rebuild.py`.
+
 ## RainyDay_mod
 
 > **About this fork.** This is a modified clone of the original RainyDay repository

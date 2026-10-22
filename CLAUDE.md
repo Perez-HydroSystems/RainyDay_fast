@@ -47,6 +47,17 @@ python tools/compare_dumps.py ref_mod <variant> [name ...] [--catalogs] [--csv-r
 **Timers:** `RAINYDAY_TIMERS=1` prints a wall-clock table at the end of a run (`Source/RainyDay_utilities_Py3/fast_prof.py`;
 hooks in `RainyDay_Py3.py`). The timers do not change results: Talequah stays bit-identical to `ref_mod`.
 
+**Fix 1, cropped input** (`tools/make_domain_crop.py`, branch `fast/io`):
+- **Crops:** `/Users/gjperezm/Databases/AORC_RainyDay/crops/<domain>/`. Each crop has a `_crop_manifest.json`.
+- **Grid resolution:** `rainprop_setup` takes it as the **mean** of the coordinate differences over the whole file, so
+  the crop margins are searched until both means equal the CONUS value bitwise.
+- **Run setting:** only `RAINPATH` changes.
+
+**Fix 2, light catalog** (`Source/RainyDay_utilities_Py3/fast_io.py`, JSON `CATALOGSTORAGE "light"`):
+- **Rebuild:** `rebuild_storm_rain` is a copy of the catalog write loop. If that loop changes, change the copy too,
+  then re-run `tools/test_light_rebuild.py` and `tools/compare_light_catalog.py`.
+- **Hooks:** the `FIO.*` calls in `RainyDay_Py3.py`.
+
 # CLAUDE.md — RainyDay GPU/acceleration testbed
 
 ## What this is
