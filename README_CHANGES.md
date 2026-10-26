@@ -264,7 +264,7 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
   - Memory: durations × storms × locations × 4 bytes (Iowa pixel, 7 × 400 × 35,416: 378 MB).
 
 ### B8. Exact frequency engine, `FREQENGINE` (GP 2026-10-26). Status: done and verified (branch `fast/exact`).
-- **Commit:** see the `fast/exact` log; the module, hooks, tools and docs are in one commit.
+- **Commit:** `e859896` (module, driver hooks, tools, unit tests, docs).
 - **What.** An optional JSON setting: `"montecarlo"` (default, unchanged), `"exact"` or `"both"`.
   - The exact engine computes the frequency analysis of RainyDay's SST model from the complete storm × location pool,
     without Monte Carlo noise.
