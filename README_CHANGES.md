@@ -179,6 +179,8 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
   combined Monte Carlo + record CI (B7).
 
 ### B7. Record (sampling) uncertainty, `RECORDCI` (GP 2026-10-26). Status: done and verified (branch `fast/record`).
+- **Commits:** `2da68ef` (module, hooks, unit tests), `874db70` (`compare_runs.py`, light catalogs in `compare_dumps`),
+  `caa319b` (docs).
 - **What.** An optional JSON setting, off by default, that adds the record (sampling) uncertainty of every frequency
   analysis of a run: the uncertainty from having only NY years of rainfall, which RainyDay's ensemble spread does not
   contain (the spread holds the storm catalog fixed). Per duration it writes `<name>_RecordBootstrap.csv` (every
