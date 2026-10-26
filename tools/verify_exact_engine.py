@@ -2,7 +2,10 @@
 """
 GP 2026-10-26: FREQENGINE check: the exact engine vs RainyDay's Monte Carlo realizations of the same run.
 
-    python tools/verify_exact_engine.py <variant> [name ...] [--out FILE.csv]
+    python tools/verify_exact_engine.py <variant> [name ...] [--pools DIR] [--out FILE.csv]
+
+    --pools DIR   the exact-pool folder, if not $FAST_TEST_ROOT/dumps/<variant>_pool (GP 2026-10-26, docs review:
+                  this option was missing from the usage line)
 
 For a FREQENGINE "both" run of the validation matrix (tools/make_test_jsons.py, tools/run_matrix.sh) made with
 RAINYDAY_DUMP_EXACTPOOL=$FAST_TEST_ROOT/dumps/<variant>_pool (the exact engine's pool of every duration) and the usual

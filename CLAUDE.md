@@ -220,23 +220,34 @@ finds the max-rainfall storm placement — which dominates runtime for long reco
 
 ## Catalog engines
 
-Selected via env var `RAINYDAY_CATALOG_ENGINE` (read near the top of
-`Source/RainyDay_Py3.py`). Only active for `DOMAINTYPE: irregular`; rectangular
-domains always use the original `catalogNumba` path. (GP 2026-10-26, README_CHANGES B9: rectangular
-domains now use the per-step `catalogFFT_irregular_domainaware` with an all-ones domain,
-i.e. the `fft_perstep` search; `catalogNumba` crashed for masks >= 3 cells.)
+Selected by `RainyDay.resolve_compute_config` (env var `RAINYDAY_CATALOG_ENGINE` > JSON
+`COMPUTE.engine` > auto, see below). The `RAINYDAY_CATALOG_ENGINE` default near the top of
+`Source/RainyDay_Py3.py` (`'batchfft'`) is only a pre-resolution fallback: with nothing set,
+auto picks `batchfft_mp` when `fork` is available and there are >= 4 cores (macOS, Linux),
+else `batchcuda` (CuPy + CUDA device), else `batchfft` (GP 2026-10-26, docs review: this
+section said `batchfft` was the default). Only active for `DOMAINTYPE: irregular`.
+Rectangular domains used the original `catalogNumba` path until README_CHANGES B9.1
+(GP 2026-10-26): they now use the per-step `catalogFFT_irregular_domainaware` with an
+all-ones domain, i.e. the `fft_perstep` search; `catalogNumba` crashed for masks >= 3 cells.
 
 | Engine | What it is | Status |
 |---|---|---|
-| `batchfft` (default) | Batched multithreaded CPU FFT over blocks of files | verified bit-identical |
-| `batchfft_mp` | `batchfft` over a process pool (parallel reads + compute) | verified bit-identical; fastest CPU option |
+| `batchfft` | Batched multithreaded CPU FFT over blocks of files | verified bit-identical |
+| `batchfft_mp` (auto default: `fork` + >= 4 cores) | `batchfft` over a process pool (parallel reads + compute) | verified bit-identical; fastest CPU option |
 | `fft_perstep` | Original loop: one `catalogFFT_irregular_domainaware` call per timestep | reference |
 | `batchtf` | TensorFlow-Metal GPU screen + CPU exact-confirm | verified bit-identical; slower than batchfft on Apple GPU |
 | `batchcuda` | CuPy/cuFFT (NVIDIA) GPU FFT screen + CPU exact-confirm | verified bit-identical to `batchfft` on the Windows/CUDA machine (Talequah + CONUS) |
 
+"Bit-identical" for the engines (GP 2026-10-26, docs review): storm dates, windows, positions
+and rain fields bitwise; `basinrainfall` (catmax) compared at rtol 1e-5, because batching
+changes the summation order (measured difference 0 for the CPU engines; see Correctness model).
+
 Tuning: `RAINYDAY_BLOCKFILES` (files per FFT batch, default 16), `RAINYDAY_NWORKERS`
-(mp workers, default cores/2), `RAINYDAY_GPU_DELTA` (GPU error screen, default 1e-3),
-`RAINYDAY_GPU_CHUNK` (`batchcuda` timesteps per GPU FFT, default 256; lower it on
+(mp workers; auto min(max(1, cores-2), 8), reduced to fit 0.6 × free RAM — the cores/2
+default in `RainyDay_Py3.py` is only reached without the resolver; GP 2026-10-26, docs review),
+`RAINYDAY_GPU_DELTA` (GPU error screen, default 1e-3),
+`RAINYDAY_GPU_CHUNK` (`batchcuda` timesteps per GPU FFT; auto from free VRAM, 8–256, 64 if
+unknown; 256 is only the function default; lower it on
 small-VRAM GPUs — CONUS needs ~64-128 on an 8 GB card, see CUDA section below),
 `RAINYDAY_SCAN_PREFETCH` (`batchcuda` reader-thread lookahead, default 2; a background
 thread reads the next block(s) while the GPU works — overlaps I/O with compute, ~1.5×
@@ -320,7 +331,14 @@ python tools/compare_catalogs.py tools/reference_catalog_fftperstep \
 - `compare_catalogs.py`: exact match on dates/x/y/cattime/rain/masks; rtol on
   basinrainfall only. Exit 0/1.
 - Reference archives: `tools/reference_catalog_fftperstep/` (Talequah),
-  `tools/conus_catalogs/reference_fftperstep/` (CONUS July-2002).
+  `tools/conus_catalogs/reference_fftperstep/` (CONUS July-2002). **They are not in the
+  repository** (`.gitignore`: large `.nc` fields; GP 2026-10-26, docs review). Make your own
+  once with the `fft_perstep` engine: `bash tools/run_talequah.sh <env> fft_perstep` (after
+  setting the paths in `Examples/Talequah/Talequah.json`), then copy
+  `<MAINPATH>/Talequah_3days/StormCatalog` to `tools/reference_catalog_fftperstep/`. For CONUS,
+  make the domain with `tools/make_conus_shapefile.py`, run
+  `Examples/CONUS_Benchmark/CONUS_bench.json` with `RAINYDAY_CATALOG_ENGINE=fft_perstep`, and keep
+  its `StormCatalog` as `tools/conus_catalogs/reference_fftperstep/`.
 - `tools/test_domainaware_equivalence.py`: unit-level per-step vs batched equivalence
   on a nasty synthetic domain (run after touching mask/validity logic).
 - CONUS case: `Examples/CONUS_Benchmark/CONUS_bench.json` (July 2002, CONUS-mainland

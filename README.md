@@ -91,9 +91,10 @@ command that makes the right crop.
 
 **5. Disk.**
 
-- `--deflate 1` (default) is lossless and about 25× smaller than `--deflate 0` on AORC, and still about 10× faster to
-  read than the CONUS files. 2002–2023 sizes: Texas 0.67 GB (16.9 GB uncompressed), Iowa 0.76 GB (29.4 GB
-  uncompressed). Talequah, 2002 Jul–Sep: 7.8 MB.
+- `--deflate 1` (default) is lossless and 25× (Texas) to 39× (Iowa) smaller than `--deflate 0` on AORC, and still
+  about 13× faster to read than the CONUS files (Iowa, Mac: about 73 vs 5.5 ms per file; GP 2026-10-26, docs review:
+  this read "about 25× smaller, about 10× faster"). 2002–2023 sizes: Texas 0.67 GB (16.9 GB uncompressed), Iowa
+  0.76 GB (29.4 GB uncompressed). Talequah, 2002 Jul–Sep: 7.8 MB.
 - Keep crops and catalogs out of synced folders such as OneDrive.
 - A full catalog costs about 2–4 GB per basin and a light one about 2 MB, so prefer light catalogs for campaigns.
 
@@ -321,7 +322,9 @@ the start.
 > (Daniel B. Wright and the Hydroclimate Extremes Group, https://github.com/HydroclimateExtremesGroup/RainyDay).
 > It contains many changes by Gabriel Perez (GP) that are **not** in the original code, including:
 > - batched multithreaded CPU / process-pool / GPU (TensorFlow-Metal, CuPy-CUDA) engines for the storm-catalog scan,
->   reader-thread prefetching, and an optional JSON `COMPUTE` block (see `CLAUDE.md`);
+>   reader-thread prefetching, and an optional JSON `COMPUTE` block (see `CLAUDE.md`). By default the engine is
+>   chosen automatically: `batchfft_mp` on macOS or Linux with 4 or more cores, else `batchcuda` with an NVIDIA GPU,
+>   else `batchfft` (GP 2026-10-26, docs review);
 > - `CATALOGPATH` to reuse an existing storm catalog from another folder, with consistency warnings;
 > - transposition on irregular domains now requires the **whole watershed inside the domain**, the same rule as the
 >   storm-catalog search (GP 2026-10-16, see the comments in `Source/RainyDay_Py3.py`);
