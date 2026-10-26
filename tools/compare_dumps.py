@@ -8,7 +8,11 @@ For every shape (default: every dump folder of the reference) under $FAST_TEST_R
   1. dumps/<ref>/<name>/*_whichrain.npy vs dumps/<test>/<name>/: same files, np.array_equal (raw transposed depths
      of every duration, before ranking; written with RAINYDAY_DUMP_WHICHRAIN)
   2. runs/<ref>/<set>/<name>_<d>/<name>_<d>_FreqAnalysis.csv vs the test run: byte-identical
-  3. --catalogs: tools/compare_catalogs.py on the two StormCatalog folders (only when both runs built a full catalog)
+  3. --catalogs: tools/compare_catalogs.py on the two StormCatalog folders when both runs built a full catalog;
+     GP 2026-10-26: light catalogs (<name>_72/StormCatalog/*_lightcatalog.nc) are compared too, every variable bitwise
+     (values, dtype, dimensions, attributes) and every global attribute except `history` (time stamp) and
+     `description` (the run JSON: MAINPATH, RECORD* keys); a run pair without comparable catalogs is a FAIL (it was
+     skipped silently before)
   4. --csv-ref DIR: the test CSVs also byte-identical to DIR/<set>/<name>_<d>[h]/..._FreqAnalysis.csv
      (e.g. the Mac dry run of 2026-10-21 in ubuntu_kit/reference_md)
 Prints PASS/FAIL per item and ALL PASS at the end; exit 0 = ALL PASS.
@@ -25,6 +29,50 @@ import numpy as np
 
 ROOT = Path(os.environ.get("FAST_TEST_ROOT", "/Users/gjperezm/Databases/RainyDay_fast_tests"))
 TOOLS = Path(__file__).resolve().parent
+
+
+def _same(x, y):
+    """bitwise equality of two arrays (floats through their bit patterns, NaN included)"""
+    x, y = np.asarray(x), np.asarray(y)
+    if x.shape != y.shape or x.dtype != y.dtype:
+        return False
+    if x.dtype.kind in "fc":
+        u = np.dtype("u%d" % x.dtype.itemsize) if x.dtype.kind == "f" else np.dtype("u%d" % (x.dtype.itemsize // 2))
+        return np.array_equal(np.ascontiguousarray(x).view(u), np.ascontiguousarray(y).view(u))
+    return np.array_equal(x, y)
+
+
+def compare_light_catalogs(a, b, ignore=("history", "description")):
+    """GP 2026-10-26: two light catalogs, raw netCDF level (no masking, scaling or time decoding): dimensions, every
+    variable (values bitwise, dtype, dimensions, attributes), every global attribute except `ignore`.
+    Returns (ok, message)."""
+    import netCDF4
+    bad = []
+    with netCDF4.Dataset(a) as A, netCDF4.Dataset(b) as B:
+        A.set_auto_maskandscale(False)
+        B.set_auto_maskandscale(False)
+        da = {k: len(v) for k, v in A.dimensions.items()}
+        db = {k: len(v) for k, v in B.dimensions.items()}
+        if da != db:
+            bad.append("dimensions %s / %s" % (da, db))
+        ga = {k: repr(A.getncattr(k)) for k in A.ncattrs() if k not in ignore}
+        gb = {k: repr(B.getncattr(k)) for k in B.ncattrs() if k not in ignore}
+        if ga != gb:
+            bad.append("global attributes " + ",".join(sorted(k for k in set(ga) | set(gb) if ga.get(k) != gb.get(k))))
+        if set(A.variables) != set(B.variables):
+            bad.append("variables %s / %s" % (sorted(A.variables), sorted(B.variables)))
+        names = sorted(set(A.variables) & set(B.variables))
+        for v in names:
+            x, y = A[v], B[v]
+            meta = (x.dimensions == y.dimensions and x.dtype == y.dtype
+                    and {k: repr(x.getncattr(k)) for k in x.ncattrs()} == {k: repr(y.getncattr(k)) for k in y.ncattrs()})
+            if not meta or not _same(x[...], y[...]):
+                bad.append(v)
+        nvar = len(names)
+    if bad:
+        return False, "light catalog DIFFERS: " + "; ".join(bad)
+    return True, "light catalog: %d variables bitwise, dimensions and global attributes equal (except %s)" % (
+        nvar, ", ".join(ignore))
 
 
 def run_dir(variant, name):
@@ -72,10 +120,17 @@ def main():
                     report(filecmp.cmp(c, cands[0], shallow=False), f"{n}: {Path(c).name} == {cands[0]}")
         if a.catalogs:
             rc, tc = rr / f"{n}_72" / "StormCatalog", tr / f"{n}_72" / "StormCatalog"
+            rl, tl = sorted(rc.glob("*_lightcatalog.nc")), sorted(tc.glob("*_lightcatalog.nc"))
             if rc.is_dir() and tc.is_dir() and any(tc.glob("*_storm_*.nc")):
                 p = subprocess.run([sys.executable, str(TOOLS / "compare_catalogs.py"), str(rc), str(tc), "--rtol", "0"],
                                    capture_output=True, text=True)
                 report(p.returncode == 0, f"{n}: compare_catalogs.py " + (p.stdout.strip().splitlines() or ["?"])[-1])
+            # GP 2026-10-26: light catalogs (compared bitwise; before, --catalogs skipped them silently)
+            elif len(rl) == 1 and len(tl) == 1 and rl[0].name == tl[0].name:
+                ok, msg = compare_light_catalogs(rl[0], tl[0])
+                report(ok, f"{n}: {rl[0].name}: {msg}")
+            else:
+                report(False, f"{n}: --catalogs: no comparable full or light catalogs in {rc} and {tc}")
     print("ALL PASS" if res and all(res) else f"SOME CHECKS FAILED ({res.count(False)} of {len(res)})")
     sys.exit(0 if res and all(res) else 1)
 
