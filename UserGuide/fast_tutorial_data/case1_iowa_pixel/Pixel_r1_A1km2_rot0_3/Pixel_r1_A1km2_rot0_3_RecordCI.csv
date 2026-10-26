@@ -1,0 +1,25 @@
+# RainyDay_fast RECORDCI (GP 2026-10-26): record (sampling) uncertainty of Pixel_r1_A1km2_rot0_3
+# year bootstrap, B = 1000, RECORDSEED 20261026, RECORDBLOCK 1; record years 2002-2023 (NY = 22, INCLUDEYEARS; storm year = start year); level 90 %; values in mm
+# rd_mean       RainyDay estimate: mean of the realizations (_FreqAnalysis.csv, unchanged)
+# sst_expected  noise-free value of rd_mean for this storm catalog (exact SST model, no Monte Carlo noise)
+# sst_level     quantile estimator of the same model: Lambda(x_T) = 1/T (PDS) or -ln(1 - 1/T) (AMS)
+# ens_lo/hi     ensemble spread of the realizations as in _FreqAnalysis.csv (UNCERTAINTY: min-max). NOT a CI
+# rec_lo/hi     record CI (90 %) of the estimate: percentiles of the B bootstrap values of sst_expected (_RecordBootstrap.csv); rec_se = their sd
+# est_lo/hi     total CI (90 %) of the RainyDay estimate (record + Monte Carlo): percentiles of rd_mean + record deviation (bootstrap value - sst_expected) + Monte Carlo error of rd_mean (normal, SE = sd(realizations)/sqrt(NREALIZATIONS)), every pair of the two independent errors
+# pred_lo/hi    predictive band (90 %): percentiles of realization + record deviation, every pair. NOT a CI: it does not shrink with more realizations and depends on NYEARS
+returnperiod,rd_mean,sst_expected,sst_level,ens_lo,ens_hi,rec_lo,rec_hi,rec_se,est_lo,est_hi,pred_lo,pred_hi
+2.0000,41.3602,41.3387,41.3125,40.1875,42.6250,39.5975,42.9886,1.0118,39.6084,43.0267,39.4332,43.2210
+3.0030,46.3454,46.3065,46.2500,44.7500,47.7500,44.3698,48.1728,1.1264,44.3857,48.2065,44.1707,48.4516
+5.0000,52.7013,52.6779,52.6250,51.1875,54.5000,50.4399,54.7370,1.2844,50.4440,54.7737,50.1783,55.1431
+10.0000,61.6742,61.6012,61.5625,58.5625,65.2500,59.1666,63.8702,1.4422,59.2113,63.9790,58.5286,64.7734
+14.9254,67.1133,66.8934,66.8125,63.3750,71.5000,64.3435,69.2704,1.5265,64.5146,69.4963,63.5347,70.6994
+20.0000,71.0606,70.7875,70.6250,67.0625,76.2500,68.1266,73.2539,1.5831,68.3570,73.5243,67.1607,74.9121
+25.0000,74.1109,73.7873,73.5625,70.2500,80.6875,71.0017,76.3445,1.6553,71.2668,76.7139,70.0319,78.2946
+50.0000,84.4920,83.9451,83.5000,76.7500,94.1875,80.3850,86.9190,1.9762,80.9206,87.5670,78.5285,90.9624
+76.9231,91.0870,90.6851,90.1875,84.3750,103.3750,86.8392,93.8843,2.1164,87.1988,94.3950,83.9712,98.1619
+100.0000,95.1255,94.8020,94.1250,86.0625,108.1250,90.8265,98.0967,2.1833,91.0912,98.5857,87.0574,104.3262
+142.8571,100.5651,100.3635,99.4375,90.0000,113.8125,96.2819,103.8279,2.2488,96.3819,104.1363,90.8113,110.7777
+200.0000,105.5632,105.5089,104.3125,91.9375,120.1250,101.3113,109.0150,2.2859,101.3136,109.1864,94.4986,116.0964
+250.0000,108.8370,108.8730,107.4375,95.7500,131.5000,104.6844,112.3990,2.3235,104.5296,112.5587,97.0217,119.8493
+500.0000,120.3926,119.6604,116.4375,98.2969,163.3125,115.0933,123.8092,2.6681,115.3775,124.9266,105.2364,140.0225
+1000.0000,131.9065,132.8860,124.9375,110.0625,176.3750,126.8473,138.1336,3.4551,125.2619,137.7053,111.7267,159.2691

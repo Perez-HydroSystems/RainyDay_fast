@@ -1,0 +1,23 @@
+# RainyDay_fast FREQENGINE (GP 2026-10-26): exact frequency analysis of Basin_raw_Iowa_HUC_07100006_1; values in mm; -9999 = no event (as RainyDay)
+# model: the SST resampling RainyDay samples, without Monte Carlo noise: Poisson storm counts (lambda = 400 storms / 22 record years = 18.1818 per year), storms and the 19656 transposition locations equally likely; X_(k) = the k-th largest storm (PDS) of NYEARS = 1000 synthetic years, k = NYEARS/T; pool: every storm at every location (7862400 values, top 1269940 used)
+# mean          E[X_(k)]: the noise-free value of RainyDay's estimate (the mean of the realizations, _FreqAnalysis.csv); depends on NYEARS
+# level         return level of the same model: Lambda(x_T) = 1/T (PDS) or -ln(1 - 1/T) (AMS), Lambda(x) = storms (or years) per year >= x; independent of NYEARS
+# q05 ... q95   quantiles of X_(k), the T-yr value of ONE realization (the distribution of the rlz columns): Q(q) = min{x: P(X_(k) <= x) >= q}, P(X_(k) <= x) = P(fewer than k events > x); a pool value; -9999 where P(fewer than k events) >= q
+# exp_min_100/exp_max_100  expected minimum / maximum of N = NREALIZATIONS = 100 realizations (the noise-free values of RainyDay's minrain/maxrain)
+# NOT confidence intervals: q* and exp_* are the ensemble (Monte Carlo) spread for this storm catalog; the record (sampling) uncertainty is RECORDCI
+prob.exceed,returnperiod,mean,level,q05,q25,q50,q75,q95,exp_min_100,exp_max_100
+0.500000,2.0000,11.8913,11.8893,11.7016,11.8133,11.8912,11.9689,12.0826,11.6039,12.1849
+0.333000,3.0030,12.9336,12.9298,12.7112,12.8424,12.9326,13.0247,13.1592,12.5946,13.2821
+0.200000,5.0000,14.1831,14.1772,13.9086,14.0678,14.1810,14.2960,14.4647,13.7669,14.6211
+0.100000,10.0000,15.9202,15.9108,15.5084,15.7470,15.9189,16.0893,16.3388,15.3021,16.5640
+0.067000,14.9254,16.9202,16.8945,16.4286,16.7057,16.9081,17.1293,17.4459,16.1947,17.7340
+0.050000,20.0000,17.6668,17.6446,17.0947,17.4271,17.6620,17.9005,18.2616,16.8064,18.5995
+0.040000,25.0000,18.2277,18.1956,17.5968,17.9614,18.2190,18.4921,18.8853,17.2877,19.2324
+0.020000,50.0000,19.8690,19.8215,19.0654,19.5186,19.8607,20.1991,20.7072,18.6771,21.2187
+0.013000,76.9231,20.8397,20.7482,19.8871,20.4137,20.8134,21.2378,21.8744,19.4282,22.4381
+0.010000,100.0000,21.4182,21.3329,20.3540,20.9535,21.4113,21.8659,22.5201,19.8629,23.2955
+0.007000,142.8571,22.1965,22.0481,20.9674,21.6692,22.1341,22.6489,23.6193,20.4018,24.8445
+0.005000,200.0000,22.9911,22.6824,21.5267,22.2504,22.8268,23.5459,25.0326,20.8832,26.5707
+0.004000,250.0000,23.5796,23.1709,21.8587,22.6345,23.3511,24.2948,26.1216,21.1894,27.5999
+0.002000,500.0000,25.6141,25.0004,22.7982,24.1520,25.4493,26.9791,28.7543,22.0003,30.4450
+0.001000,1000.0000,27.6041,26.9239,23.8724,26.0735,27.6931,28.9806,31.6175,22.6909,32.2978

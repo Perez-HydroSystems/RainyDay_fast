@@ -4,7 +4,9 @@ Test case: `Examples/Talequah/Talequah.json` — irregular domain (180×180 grid
 28×33 storm mask), 72 h duration, 10 storms, AORC Jul–Sep 2002 (92 daily files,
 hourly). Machine: Apple M3 Max (16 cores). All runs verified with
 `tools/compare_catalogs.py` against `tools/reference_catalog_fftperstep/`
-(regenerated baseline, RainyDay_Env).
+(regenerated baseline, RainyDay_Env). That folder and `tools/conus_catalogs/` are not in the
+repository (`.gitignore`); regenerate them with the `fft_perstep` engine, see CLAUDE.md
+"Verification harness" (GP 2026-10-26, docs review).
 
 - **catalog scan timer** = the file-scanning part that the engines accelerate.
   This is the part that grows linearly with record length — the 20-year cost driver.
@@ -53,7 +55,8 @@ Same AORC data with the transposition domain set to the CONUS mainland
 July 2002 (31 files, 744 timesteps), same Talequah watershed (28×33 mask).
 Only 4 storms satisfy the 24-h separation in one month at CONUS scale (legacy
 selection behavior, identical across engines). All engines verified ALL PASS
-(bitwise) against the fft_perstep run; archives in `tools/conus_catalogs/`.
+(bitwise) against the fft_perstep run; archives in `tools/conus_catalogs/` (local only,
+gitignored; GP 2026-10-26, docs review).
 
 | Engine         | Scan (min) | Speedup | Catalog identical? |
 |----------------|-----------:|--------:|--------------------|
@@ -76,11 +79,14 @@ as an absolute path.
 
 ## Usage
 
-Engine selection: `RAINYDAY_CATALOG_ENGINE=batchfft|batchfft_mp|fft_perstep|batchtf`
-(default is `batchfft`; read at the top of `Source/RainyDay_Py3.py`; rectangular
-domains always use the original catalogNumba path).
+Engine selection: `RAINYDAY_CATALOG_ENGINE=batchfft|batchfft_mp|fft_perstep|batchtf|batchcuda`
+or the JSON `COMPUTE` block. GP 2026-10-26 (docs review): the default is not `batchfft`.
+With nothing set, `RainyDay.resolve_compute_config` picks `batchfft_mp` when the `fork`
+start method is available and there are >= 4 cores (macOS, Linux), else `batchcuda`
+(CuPy + CUDA device), else `batchfft`. Rectangular domains use the per-step
+`fft_perstep` search since README_CHANGES B9.1 (before: the original catalogNumba path).
 Tuning: `RAINYDAY_BLOCKFILES` (files per FFT batch, default 16),
-`RAINYDAY_NWORKERS` (batchfft_mp workers, default = cores/2).
+`RAINYDAY_NWORKERS` (batchfft_mp workers; auto min(max(1, cores-2), 8), fitted to free RAM).
 
 Run + verify:
 
@@ -92,4 +98,5 @@ python RainyDay/tools/compare_catalogs.py RainyDay/tools/reference_catalog_fftpe
 
 "Bitwise" = identical storm dates, x/y placements, cattime, and rain fields;
 `basinrainfall` measured difference was exactly 0 in all passing runs
-(tolerance allowed rtol 1e-5). Criterion details: header of `compare_catalogs.py`.
+(tolerance allowed rtol 1e-5, because batching changes the summation order and may move
+the last digits; GP 2026-10-26, docs review). Criterion details: header of `compare_catalogs.py`.

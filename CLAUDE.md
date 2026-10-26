@@ -4,6 +4,10 @@
 touched. The remote is `fast` = private `Perez-HydroSystems/RainyDay_fast`. There is no `mod`/`origin` remote here, so
 nothing can reach RainyDay_mod by accident.
 
+**Branches (GP 2026-10-26):** everything is on `main`. The feature branches `fast/io`, `fast/sst`, `fast/record` and
+`fast/exact` were merged (fast/exact by a merge commit on 2026-10-26) and deleted. The "(branch …)" notes below record
+where each feature was developed. Start new work on a new branch from `main`.
+
 **Goal:** fixes 1–3, see `README.md` "RainyDay_fast":
 1. cropped, uncompressed input per domain;
 2. light storm catalog;
@@ -28,6 +32,15 @@ Any difference is a bug.
 - **Large outputs stay out of OneDrive:**
   - runs, catalogs and dumps go in `/Users/gjperezm/Databases/RainyDay_fast_tests/`;
   - crops go in `/Users/gjperezm/Databases/AORC_RainyDay/crops/`.
+
+**User's Guide (GP 2026-10-26):** `UserGuide/RainyDay_fast_tutorial.ipynb` (what RainyDay_fast changes, adds and
+fixes; companion to the original `UserGuide/RainyDay_Tutorial.ipynb`). Its code cells only read
+`UserGuide/fast_tutorial_data/` (real run outputs; `MANIFEST.md` has the md5s, settings and commands);
+`UserGuide/fast_tutorial_figures/make_figures.py` regenerates its 4 static PNGs. Re-execute it from `UserGuide/` with a
+Python that has nbconvert and ipykernel (e.g. the Hydro_process env):
+`jupyter nbconvert --to notebook --execute --inplace --ExecutePreprocessor.record_timing=False RainyDay_fast_tutorial.ipynb`
+(about 5 s; no warnings expected; the flag keeps timestamps out of the cell metadata).
+Update the guide when a change alters behaviour it documents.
 
 **Validation matrix** (`tools/make_test_jsons.py`, `tools/run_matrix.sh`, `tools/compare_dumps.py`):
 - **Shapes:**
@@ -99,6 +112,107 @@ for a new domain or dataset"):
   summation data flow as the object-mode specialization, no FMA); `tools/bench_fast_sst.py <StormCatalog>` (per-storm
   timings table vs fast).
 
+**`RECORDCI`, record (sampling) uncertainty (branch `fast/record`, GP 2026-10-26; README "Record (sampling)
+uncertainty", README_CHANGES B7).** Adds outputs only; every existing output stays bit-identical.
+- **Module map:**
+  - `Source/RainyDay_utilities_Py3/fast_record.py`:
+    - `parse_options` (RECORD* keys, strings or JSON booleans), `check_options`, `check_duration`;
+    - `storm_years` (start year), `record_years`, `year_draws` (`default_rng(RECORDSEED)`, moving blocks),
+      `draw_counts`, `jackknife_counts`;
+    - per storm: `storm_values` = `basin_windows` (float64 FFT correlation with `trimmask`, one cumsum, max over the
+      windows; the prototype's `basin_series`/`dmax`) + `zero_anchors` (RainyDay's < 0.5 zero rule, exact) +
+      `dry_support` (no rain on the weighted cells -> exactly 0);
+    - `Pool` (port of `record_boot.Pool`: top-M values with their record-year group; `levels`, `expected`
+      (`gammainc` PDS / `betainc` AMS, trapezoid on the prototype's 20000-point grid)), `m_needed`, `cum_counts`;
+    - `RecordCI`: run object (`add_storm`, `write`, `write_draws`).
+  - Hooks in `RainyDay_Py3.py` (`GP 2026-10-26`, insertions only): import; parse + option checks before the
+    catalog (stop early); `check_duration` after the MULTIPLEDURATIONS checks; `RecordCI(...)` before the resampling
+    loop (anchors `xmask/ymask` or the whole grid); `add_storm(i, catrain)` at the end of each storm (a NaN -> 0 copy);
+    `write(...)` after the parent and every sub-duration `write_frequency_outputs`; `report()`.
+  - `tools/test_record_ci.py` (unit tests), `tools/compare_runs.py` (IDF_A vs IDF_B with Monte Carlo + record CI),
+    `tools/compare_dumps.py --catalogs` (now also compares light catalogs bitwise).
+- **Invariants:** no `np.random` call (own `default_rng`); RainyDay's arrays are only read (`catrain` copied);
+  writes happen before the SCENARIOS block (SCENARIOS is not supported anyway).
+- **Prototype parity:** on the Iowa pixel catalog, `levels` and `expected` (point, 1000 bootstrap draws, 7 durations)
+  equal the prototype cache `24_record_uncertainty/cache/pixel_Iowa.npz` bitwise. Keep `P` C-contiguous before
+  `trapezoid` (a gathered `P[:, inv]` is F-ordered and changes numpy's summation order: 1e-14 differences).
+- **Status (2026-10-26):**
+  - `compare_dumps ref off --catalogs` and `ref on --catalogs`: ALL PASS (80 checks each; `ref` = main b63865a in
+    the worktree `$FAST_TEST_ROOT/src_ref`); 55/55 PNGs byte-identical; `tools/test_record_ci.py`: 28 PASS.
+  - The pixel CI and jackknife values equal the prototype's CSVs to every printed decimal.
+  - Added time with the option on, B = 200 (matrix, 5 jobs in parallel): +9 to +48 s per shape, +0.2–0.34 GB peak.
+  - Validation runs: `$FAST_TEST_ROOT/runs/val/{Iowa,HUC}` (JSONs in `jsons/val`), compare_runs output in
+    `$FAST_TEST_ROOT/compare/`.
+
+**`FREQENGINE`, exact frequency engine (branch `fast/exact`, GP 2026-10-26; README "Exact frequency engine",
+README_CHANGES B8).** Values: `"montecarlo"` (default), `"exact"`, `"both"`. `"both"` keeps every Monte Carlo output
+bit-identical; `"exact"` skips the draws by design (no `np.random` call after the seed) and writes no `_FreqAnalysis.csv`.
+- **Module map (`fast_record.py`):**
+  - `parse_engine`; `check_options`/`check_duration` take `who=` (same scope as RECORDCI);
+  - `StormPool`: the per-storm pool, moved out of `RecordCI` with unchanged arithmetic. One object per run: `RecordCI`
+    creates it, and `ExactFA(record=recordci)` shares it (`vals[j] = None` frees it for both);
+  - new `Pool` methods (`levels`/`expected` untouched): `_values_at` (m-th largest expanded value, the `levels`
+    search), `critical_counts` + `quantiles` (`gammaincinv`/`betaincinv`; Q = the pool value of rank floor(c*) + 1;
+    −9999 where P(fewer than k events) ≥ q), `cdf` (F and 1 − F, strict count > x), `expected_minmax` (survival Pᴺ and
+    1 − (1 − P)ᴺ in the `expected` trapezoid);
+  - `ExactFA`: `compute(j)`, a fresh `Pool` (one group, `m_needed` with RainyDay's `nyears`) with the same call order as
+    `RecordCI.estimates`, so `mean == sst_expected` bitwise when NY equals `nyears`. Then `write(j, folder, name)`
+    writes `_FreqExact.csv/.png`, and in exact mode with RECORDCI calls `RecordCI.write(sortrain=None, exact=...)`.
+    `write_all` covers every duration. `exact_png` uses RainyDay's plot style;
+  - `RecordCI.write(..., exact=None)`, the exact path. `_RecordBootstrapLevel.csv` is written when `write_level` is set
+    (set by `ExactFA`).
+- **Hooks in `RainyDay_Py3.py` (`GP 2026-10-26`; every replaced line is kept as a comment):**
+  - after the RECORDCI parse: `freqengine`/`freqexact` and the option checks; the duration check;
+  - draws: the `if freqexact:` branch ahead of the sampling `elif` chain, `whichstorms` one-line guards, the draw loop
+    `for i in (... if not freqexact else ())`, the `elif` for the `whichx/whichrain` allocations, and
+    `and not freqexact` on `whichrain_md`/`whichtimeind`;
+  - `ExactFA(...)` after `RecordCI(...)`; `stormsel`/`wsel` guards; in the storm loop, `add_storm` + `continue` in exact
+    mode right after reading `catrain`; `exactfa.add_storm` at the loop end (`both` without RECORDCI);
+  - guards on the −9999 marks and the whichrain dump; `and not freqexact` on the ranking (`calctype` line);
+  - `exactfa.write_all(...)` before the Monte Carlo writes; guards on `write_frequency_outputs`, the parent RECORDCI
+    write and the sub-duration loop.
+- **Tools:** `tools/verify_exact_engine.py <variant>` (a `both` run made with `RAINYDAY_DUMP_EXACTPOOL=<dir>`: exact vs
+  realizations, i.e. mean z, quantile binomial bands, min/max of N); `compare_runs.py --engine auto|montecarlo|exact
+  --stat mean|median|level`; `tools/test_record_ci.py` (44 tests).
+- **Status (2026-10-26):**
+  - `compare_dumps ref off2|both|on2|on_both --catalogs`: ALL PASS (80 each); 55/55 PNGs of `both` byte-identical;
+  - `exact`: catalogs bitwise equal to `ref`, `_FreqExact.csv` 35/35 byte-identical to `both`;
+  - `verify_exact_engine.py both`: mean |z| ≤ 2.64 (Iowa/Texas); quantiles 1603/1610 in the 99 % binomial band;
+    min/max 89–90 % in the central 90 %;
+  - runs in `$FAST_TEST_ROOT/runs/{off2,exact,both,on2,on_exact,on_both,hucexact}`, pools in `dumps/both_pool`.
+
+**Bug fixes of 2026-10-26 (branch `fast/fixes`; README_CHANGES B9).**
+- **Module map:**
+  - `Source/RainyDay_utilities_Py3/fast_parse.py` (JSON parsing; numpy only, no `np.random`):
+    - `check_required` / `required_keys` (missing required keys);
+    - `parse_excludemonths` (wrap ranges `"12-3"`, single months `"8"`, lists of strings);
+    - `parse_includeyears` (`"all"`/`"none"` explicitly, lists of strings);
+    - `parse_excludestorms` (single storm `"17"`);
+    - `parse_calctype` (unknown values stop before the catalog);
+    - `parse_uncertainty` (numbers -> quantile band);
+    - `returnlevels_from_string` (comma string `"2,5,10"`);
+    - `default_nstorms` (NSTORMS absent on an existing catalog).
+    - **Rule:** inputs that parsed correctly before give the same objects (values, list vs array, `int` vs
+      `np.int32`); unreadable strings now stop with the accepted formats.
+  - Hooks in `RainyDay_Py3.py` (`GP 2026-10-26`, old code commented):
+    - `check_required` right after the JSON read;
+    - the parse hooks at the original locations;
+    - `default_nstorms` in the existing-catalog branch;
+    - the `np.int32` month in `catinclude` (EXCLUDEMONTHS on an existing catalog without INCLUDEYEARS);
+    - both rectangular catalog searches (scan and duration rewrite) call `catalogFFT_irregular_domainaware` with an
+      all-ones domain (`catalogNumba` is no longer called; `CATALOGACCELERATOR` has no effect).
+  - `RainyDay_functions.write_frequency_outputs`: `spreadmean` in the quantile branch (UNCERTAINTY as a number).
+  - `fast_io.parse_years_months` (crop tool) calls the same parsers.
+- **Tests:**
+  - `tools/test_parsing.py`: old blocks copied verbatim vs the current driver blocks, run with `exec`; one test per
+    fix and identical objects for the paper, Talequah and matrix JSONs.
+  - `tools/test_rect_catalog.py`: brute force at every anchor vs the rectangular search.
+  - Neither needs data.
+- **Status (2026-10-26):** validation matrix on top of `fast/exact`, variants `fx_off`, `fx_both`, `fx_on_both`,
+  `fx_exact`: `compare_dumps ref ... --catalogs` ALL PASS (80 each); `fx_exact` catalogs bitwise equal to `ref`;
+  `_FreqExact.csv` and RECORDCI files byte-identical to `both`/`on_both`. PNGs: the rendering environment changed during
+  the day (the reference code renders the new PNGs too), so compare PNGs only within one session.
+
 # CLAUDE.md — RainyDay GPU/acceleration testbed
 
 ## What this is
@@ -119,21 +233,34 @@ finds the max-rainfall storm placement — which dominates runtime for long reco
 
 ## Catalog engines
 
-Selected via env var `RAINYDAY_CATALOG_ENGINE` (read near the top of
-`Source/RainyDay_Py3.py`). Only active for `DOMAINTYPE: irregular`; rectangular
-domains always use the original `catalogNumba` path.
+Selected by `RainyDay.resolve_compute_config` (env var `RAINYDAY_CATALOG_ENGINE` > JSON
+`COMPUTE.engine` > auto, see below). The `RAINYDAY_CATALOG_ENGINE` default near the top of
+`Source/RainyDay_Py3.py` (`'batchfft'`) is only a pre-resolution fallback: with nothing set,
+auto picks `batchfft_mp` when `fork` is available and there are >= 4 cores (macOS, Linux),
+else `batchcuda` (CuPy + CUDA device), else `batchfft` (GP 2026-10-26, docs review: this
+section said `batchfft` was the default). Only active for `DOMAINTYPE: irregular`.
+Rectangular domains used the original `catalogNumba` path until README_CHANGES B9.1
+(GP 2026-10-26): they now use the per-step `catalogFFT_irregular_domainaware` with an
+all-ones domain, i.e. the `fft_perstep` search; `catalogNumba` crashed for masks >= 3 cells.
 
 | Engine | What it is | Status |
 |---|---|---|
-| `batchfft` (default) | Batched multithreaded CPU FFT over blocks of files | verified bit-identical |
-| `batchfft_mp` | `batchfft` over a process pool (parallel reads + compute) | verified bit-identical; fastest CPU option |
+| `batchfft` | Batched multithreaded CPU FFT over blocks of files | verified bit-identical |
+| `batchfft_mp` (auto default: `fork` + >= 4 cores) | `batchfft` over a process pool (parallel reads + compute) | verified bit-identical; fastest CPU option |
 | `fft_perstep` | Original loop: one `catalogFFT_irregular_domainaware` call per timestep | reference |
 | `batchtf` | TensorFlow-Metal GPU screen + CPU exact-confirm | verified bit-identical; slower than batchfft on Apple GPU |
 | `batchcuda` | CuPy/cuFFT (NVIDIA) GPU FFT screen + CPU exact-confirm | verified bit-identical to `batchfft` on the Windows/CUDA machine (Talequah + CONUS) |
 
+"Bit-identical" for the engines (GP 2026-10-26, docs review): storm dates, windows, positions
+and rain fields bitwise; `basinrainfall` (catmax) compared at rtol 1e-5, because batching
+changes the summation order (measured difference 0 for the CPU engines; see Correctness model).
+
 Tuning: `RAINYDAY_BLOCKFILES` (files per FFT batch, default 16), `RAINYDAY_NWORKERS`
-(mp workers, default cores/2), `RAINYDAY_GPU_DELTA` (GPU error screen, default 1e-3),
-`RAINYDAY_GPU_CHUNK` (`batchcuda` timesteps per GPU FFT, default 256; lower it on
+(mp workers; auto min(max(1, cores-2), 8), reduced to fit 0.6 × free RAM — the cores/2
+default in `RainyDay_Py3.py` is only reached without the resolver; GP 2026-10-26, docs review),
+`RAINYDAY_GPU_DELTA` (GPU error screen, default 1e-3),
+`RAINYDAY_GPU_CHUNK` (`batchcuda` timesteps per GPU FFT; auto from free VRAM, 8–256, 64 if
+unknown; 256 is only the function default; lower it on
 small-VRAM GPUs — CONUS needs ~64-128 on an 8 GB card, see CUDA section below),
 `RAINYDAY_SCAN_PREFETCH` (`batchcuda` reader-thread lookahead, default 2; a background
 thread reads the next block(s) while the GPU works — overlaps I/O with compute, ~1.5×
@@ -217,7 +344,14 @@ python tools/compare_catalogs.py tools/reference_catalog_fftperstep \
 - `compare_catalogs.py`: exact match on dates/x/y/cattime/rain/masks; rtol on
   basinrainfall only. Exit 0/1.
 - Reference archives: `tools/reference_catalog_fftperstep/` (Talequah),
-  `tools/conus_catalogs/reference_fftperstep/` (CONUS July-2002).
+  `tools/conus_catalogs/reference_fftperstep/` (CONUS July-2002). **They are not in the
+  repository** (`.gitignore`: large `.nc` fields; GP 2026-10-26, docs review). Make your own
+  once with the `fft_perstep` engine: `bash tools/run_talequah.sh <env> fft_perstep` (after
+  setting the paths in `Examples/Talequah/Talequah.json`), then copy
+  `<MAINPATH>/Talequah_3days/StormCatalog` to `tools/reference_catalog_fftperstep/`. For CONUS,
+  make the domain with `tools/make_conus_shapefile.py`, run
+  `Examples/CONUS_Benchmark/CONUS_bench.json` with `RAINYDAY_CATALOG_ENGINE=fft_perstep`, and keep
+  its `StormCatalog` as `tools/conus_catalogs/reference_fftperstep/`.
 - `tools/test_domainaware_equivalence.py`: unit-level per-step vs batched equivalence
   on a nasty synthetic domain (run after touching mask/validity logic).
 - CONUS case: `Examples/CONUS_Benchmark/CONUS_bench.json` (July 2002, CONUS-mainland
