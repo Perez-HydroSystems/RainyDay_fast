@@ -4,6 +4,10 @@
 touched. The remote is `fast` = private `Perez-HydroSystems/RainyDay_fast`. There is no `mod`/`origin` remote here, so
 nothing can reach RainyDay_mod by accident.
 
+**Branches (GP 2026-10-26):** everything is on `main`. The feature branches `fast/io`, `fast/sst`, `fast/record` and
+`fast/exact` were merged (fast/exact by a merge commit on 2026-10-26) and deleted. The "(branch …)" notes below record
+where each feature was developed. Start new work on a new branch from `main`.
+
 **Goal:** fixes 1–3, see `README.md` "RainyDay_fast":
 1. cropped, uncompressed input per domain;
 2. light storm catalog;
