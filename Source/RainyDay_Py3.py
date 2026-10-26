@@ -923,6 +923,14 @@ if isinstance(catalogstride, int):
 recordopts=FR.parse_options(cardinfo)
 if recordopts is not None:
     FR.check_options(recordopts,freqanalysis=FreqAnalysis,transpotype=transpotype,samplingtype=samplingtype,calctype=globals().get('calctype'),areatype=areatype,rescaletype=rescaletype,rotation=rotation,intensdistr=userdistr.all()!=False,scenarios=Scenarios,seasonalsampling=seasonalsampling)
+# GP 2026-10-26: FREQENGINE (optional, default "montecarlo"; RainyDay_fast fast_record.ExactFA, README_CHANGES B8):
+# "exact" computes the frequency analysis from the complete storm x location pool (no realizations: the Monte Carlo draws,
+# ranking and _FreqAnalysis.csv are skipped, so no np.random call happens after the seed); "both" adds the exact outputs
+# to RainyDay's unchanged Monte Carlo outputs. Same scope as RECORDCI, checked here before the storm catalog is built.
+freqengine=FR.parse_engine(cardinfo)
+freqexact=(freqengine=='exact')
+if freqengine!='montecarlo':
+    FR.check_options(None,freqanalysis=FreqAnalysis,transpotype=transpotype,samplingtype=samplingtype,calctype=globals().get('calctype'),areatype=areatype,rescaletype=rescaletype,rotation=rotation,intensdistr=userdistr.all()!=False,scenarios=Scenarios,seasonalsampling=seasonalsampling,who="FREQENGINE '"+freqengine+"'")
 
 #==============================================================================
 # THIS BLOCK CONFIGURES SEVERAL THINGS
@@ -2223,6 +2231,8 @@ if multidurations is not None:
 # GP 2026-10-26: RECORDCI: not on the duration-rewrite path (catalog longer than DURATION, DURATIONCORRECTION false)
 if recordopts is not None:
     FR.check_duration(durationcheck,durcorrection)
+if freqengine!='montecarlo':                         # GP 2026-10-26: FREQENGINE: the same duration check
+    FR.check_duration(durationcheck,durcorrection,who="FREQENGINE '"+freqengine+"'")
 
 if FreqAnalysis:
     print("resampling and transposing...")
@@ -2234,7 +2244,13 @@ if FreqAnalysis:
         
         
     # resampling counts options:
-    if samplingtype.lower()=='poisson':
+    # GP 2026-10-26: FREQENGINE "exact": no synthetic years are drawn (no ncounts, whichstorms, locations): the exact
+    # engine computes the frequency analysis from the pool of every storm at every location, so the np.random calls of
+    # the draws are skipped on purpose (README_CHANGES B8); "montecarlo"/"both": unchanged (the elif chain below)
+    if freqexact:
+        print("FREQENGINE 'exact': no Monte Carlo draws (exact frequency analysis from the storm x location pool)")
+    # if samplingtype.lower()=='poisson':            # GP 2026-10-26: old line, now an elif of the branch above
+    elif samplingtype.lower()=='poisson':
         #lrate=len(catmax)/nyears*FrequencySens 
         lrate=len(catmax)/nyears      
         ncounts=np.random.poisson(lrate,(nsimulations,nrealizations))
@@ -2260,8 +2276,11 @@ if FreqAnalysis:
             sys.exit("You specified to write multiple storms per year, but you specified a number that is too large relative to the resampling rate!")
         #ncounts[ncounts==0]=1
             
-    whichstorms=np.empty((np.nanmax(ncounts),ncounts.shape[0],ncounts.shape[1]),dtype='int32')
-    whichstorms[:]=-9999
+    # GP 2026-10-26: FREQENGINE "exact": no draws (old lines kept commented; the same lines run otherwise)
+    # whichstorms=np.empty((np.nanmax(ncounts),ncounts.shape[0],ncounts.shape[1]),dtype='int32')
+    # whichstorms[:]=-9999
+    if not freqexact: whichstorms=np.empty((np.nanmax(ncounts),ncounts.shape[0],ncounts.shape[1]),dtype='int32')
+    if not freqexact: whichstorms[:]=-9999
     
     if rotation==True:
         randangle=(maxangle-minangle)*np.random.random_sample(((np.nanmax(ncounts),ncounts.shape[0],ncounts.shape[1])))+minangle
@@ -2272,7 +2291,8 @@ if FreqAnalysis:
     
     
     # DOES THIS PROPERLY HANDLE STORM EXCLUSIONS???  I think so...
-    for i in range(0, np.nanmax(ncounts)):
+    # for i in range(0, np.nanmax(ncounts)):        # GP 2026-10-26: old line; FREQENGINE "exact": no storm draws
+    for i in (range(0, np.nanmax(ncounts)) if not freqexact else ()):
         whichstorms[i, ncounts >= i + 1] = np.random.randint(0, nstorms, (len(ncounts[ncounts >= i + 1])))  # why was this previously "nstorms-1"??? Bug
     # added 2/6/2024 DBW to support seasonally-dependent sampling
     if seasonalsampling:
@@ -2305,7 +2325,10 @@ if FreqAnalysis:
     #whichx=np.zeros((whichstorms.shape),dtype='int32')
     #whichy=np.zeros((whichstorms.shape),dtype='int32')
     
-    if areatype.lower()=="pointlist":
+    if freqexact:                                     # GP 2026-10-26: FREQENGINE "exact": no draws to store
+        pass
+    # if areatype.lower()=="pointlist":               # GP 2026-10-26: old line, now an elif of the branch above
+    elif areatype.lower()=="pointlist":
         whichx=np.zeros((whichstorms.shape[0],whichstorms.shape[1],whichstorms.shape[2],npoints_list),dtype='int32')
         whichy=np.zeros((whichstorms.shape[0],whichstorms.shape[1],whichstorms.shape[2],npoints_list),dtype='int32')
         whichrain=np.zeros((whichstorms.shape[0],whichstorms.shape[1],whichstorms.shape[2],npoints_list),dtype='float32')
@@ -2315,11 +2338,13 @@ if FreqAnalysis:
         whichrain=np.zeros((whichstorms.shape[0],whichstorms.shape[1],whichstorms.shape[2],1),dtype='float32')
         whichstep=np.zeros((whichstorms.shape[0],whichstorms.shape[1],whichstorms.shape[2],1),dtype='int32')
     # GP 2026-10-21: MULTIPLEDURATIONS: depths of the shorter durations for the same draws (storm, location)
-    if len(subdurs)>0:
+    # if len(subdurs)>0:                              # GP 2026-10-26: old line; FREQENGINE "exact": no draws
+    if len(subdurs)>0 and not freqexact:
         whichrain_md=np.zeros((len(subdurs),)+whichrain.shape,dtype='float32')
 
     
-    if durcorrection:
+    # if durcorrection:                               # GP 2026-10-26: old line; FREQENGINE "exact": no draws
+    if durcorrection and not freqexact:
         whichtimeind=np.zeros((whichstorms.shape),dtype='float32')
     
     # ------------------------------------------------------------------------------------------------
@@ -2495,21 +2520,36 @@ if FreqAnalysis:
                              parent_fullsum=(durcorrection==False),trimmask=trimmask,mnorm=mnorm,timeres=rainprop.timeres,shape=rainprop.subdimensions,
                              anchors=(ymask,xmask) if domain_type=='irregular' else None,cattime=cattime,includeyears=includeyears,nyears_rd=nyears,
                              calctype=calctype,nsim=nsimulations,alllevels=alllevels,speclevels=globals().get('speclevels'),folder=fullpath,basename=basescenario)
+    # GP 2026-10-26: FREQENGINE "exact"/"both" (fast_record.ExactFA): the exact frequency analysis from the same pool
+    # (shared with RECORDCI when it is on: one copy); nyears = RainyDay's own record years (divisor of the storm rate)
+    exactfa=None
+    if freqengine!='montecarlo':
+        exactfa=FR.ExactFA(freqengine,durations=[duration]+list(subdurs),steps=[int(duration*60/rainprop.timeres)]+(list(substeps) if len(subdurs)>0 else []),
+                           parent_fullsum=(durcorrection==False),trimmask=trimmask,mnorm=mnorm,timeres=rainprop.timeres,shape=rainprop.subdimensions,
+                           anchors=(ymask,xmask) if domain_type=='irregular' else None,nstorms=nstorms,nyears_rd=nyears,calctype=calctype,
+                           nsim=nsimulations,nreal=nrealizations,alllevels=alllevels,speclevels=globals().get('speclevels'),
+                           spreadtype=spreadtype,quantilecalc=globals().get('quantilecalc'),record=recordci)
 
     # here is the main resampling and transposition loop
     FP.tic('resampling: total')                       # GP 2026-10-22: RAINYDAY_TIMERS
     # GP 2026-10-22: RainyDay_fast: the draws of storm i as one index tuple, wsel = np.nonzero(whichstorms==i) (same
     # elements, same order), built for all storms from one stable argsort, instead of a new boolean mask of whichstorms
     # for every use (~10 full scans per storm). Used on the uniform/irregular/watershed/no-rescaling path below.
-    stormsel=FST.StormSelector(whichstorms,nstorms)
+    # stormsel=FST.StormSelector(whichstorms,nstorms)   # GP 2026-10-26: old line; FREQENGINE "exact": no draws
+    stormsel=FST.StormSelector(whichstorms,nstorms) if not freqexact else None
     for i in np.arange(0,nstorms):
-        wsel=stormsel(i)                              # GP 2026-10-22
+        # wsel=stormsel(i)                            # GP 2026-10-22 (GP 2026-10-26: old line)
+        wsel=stormsel(i) if not freqexact else None   # GP 2026-10-26: FREQENGINE "exact": no draws
         FP.tic('resampling: storm read')              # GP 2026-10-22: RAINYDAY_TIMERS
         # catrain,_,_,_,_,_,_,_,_,_,_ = RainyDay.readcatalog(stormlist[i])
         catrain,_,_,_,_,_,_,_,_,_,_ = FIO.readcatalog(stormlist[i])   # GP 2026-10-22: full or light catalog
         catrain = np.array(catrain)
         catrain[np.less(catrain,0.)]=np.nan
         FP.toc('resampling: storm read')              # GP 2026-10-22: RAINYDAY_TIMERS
+        if freqexact:                                 # GP 2026-10-26: FREQENGINE "exact": this storm's pool, no draws
+            print('Exact engine: pool of storm '+str(i+1)+' out of '+str(nstorms)+' ('"{0:0.0f}".format(100*(i+1)/nstorms)+'%)')
+            exactfa.add_storm(i,catrain)
+            continue
         
         if (durationcheck==False and durcorrection==False): 
             print("checking storm catalog duration, and adjusting if needed...")
@@ -2753,6 +2793,8 @@ if FreqAnalysis:
         FP.toc('resampling: sub-durations')           # GP 2026-10-22: RAINYDAY_TIMERS
         if recordci is not None:                      # GP 2026-10-26: RECORDCI pool of this storm (copy of catrain)
             recordci.add_storm(i,catrain)
+        if exactfa is not None and recordci is None:  # GP 2026-10-26: FREQENGINE "both" (with RECORDCI: shared pool)
+            exactfa.add_storm(i,catrain)
     FP.toc('resampling: total')                       # GP 2026-10-22: RAINYDAY_TIMERS
     FST.report()                                      # GP 2026-10-22: "table" engine statistics (prints nothing otherwise)
 
@@ -2777,20 +2819,29 @@ if FreqAnalysis:
             
             
     # modified by DBW to account for k=0 situations, 9/22/2022
-    nostorm_index=np.equal(whichstorms,-9999)
-    whichrain[nostorm_index]=-9999.
-    if len(subdurs)>0:      # GP 2026-10-21: MULTIPLEDURATIONS
+    # GP 2026-10-26: FREQENGINE "exact" has no draws (no whichstorms/whichrain): the k=0 marks, the dump hook and the
+    # ranking below are skipped (old lines kept commented; the same lines run otherwise). The try/except NameError
+    # lines below then do nothing (nostorm_index is not defined).
+    # nostorm_index=np.equal(whichstorms,-9999)
+    # whichrain[nostorm_index]=-9999.
+    # if len(subdurs)>0:      # GP 2026-10-21: MULTIPLEDURATIONS
+    if not freqexact: nostorm_index=np.equal(whichstorms,-9999)
+    if not freqexact: whichrain[nostorm_index]=-9999.
+    if len(subdurs)>0 and not freqexact:      # GP 2026-10-21: MULTIPLEDURATIONS
         whichrain_md[:,nostorm_index]=-9999.
     # GP 2026-10-21: debugging/verification hook: RAINYDAY_DUMP_WHICHRAIN=<folder> saves the raw transposed depths
     # (before ranking) of every duration as <name>_whichrain.npy; does nothing when the variable is not set
     mddump=os.environ.get("RAINYDAY_DUMP_WHICHRAIN","").strip()
-    if mddump!='':
+    # if mddump!='':                                  # GP 2026-10-26: old line; FREQENGINE "exact": no raw depths
+    if mddump!='' and not freqexact:
         os.makedirs(mddump,exist_ok=True)
         np.save(os.path.join(mddump,scenarioname+'_whichrain.npy'),whichrain)
         for jd in range(0,len(subdurs)):
             np.save(os.path.join(mddump,basescenario+'_'+RainyDay.durtag(subdurs[jd])+'_whichrain.npy'),whichrain_md[jd])
-    whichx[nostorm_index]=-9999
-    whichy[nostorm_index]=-9999
+    # whichx[nostorm_index]=-9999                     # GP 2026-10-26: old lines; FREQENGINE "exact": no draws
+    # whichy[nostorm_index]=-9999
+    if not freqexact: whichx[nostorm_index]=-9999
+    if not freqexact: whichy[nostorm_index]=-9999
     try:
         whichstep[nostorm_index]=-9999
     except NameError:
@@ -2866,7 +2917,8 @@ if FreqAnalysis:
             exceedp=exceedp[reducedlevind]
                 
     else:
-        if calctype=='ams' or calctype=='pds':          # this isn't very elegant!
+        # if calctype=='ams' or calctype=='pds':          # this isn't very elegant!   (GP 2026-10-26: old line)
+        if (calctype=='ams' or calctype=='pds') and not freqexact:   # GP 2026-10-26: FREQENGINE "exact": no realizations to rank
             if calctype.lower()=='ams':
                 maxrain=np.nanmax(whichrain[:,:,:,pt],axis=0)
                 maxind=np.nanargmax(whichrain,axis=0)
@@ -3182,13 +3234,21 @@ if FreqAnalysis:
         # plt.tight_layout()
         # plt.savefig(fullpath+'/'+scenarioname+'_FrequencyAnalysis.png',dpi=250)
         # plt.close('all')
+        # GP 2026-10-26: FREQENGINE "exact"/"both": <name>_FreqExact.csv/.png of every duration (fast_record.ExactFA;
+        # "exact" with RECORDCI also writes the RECORDCI outputs from the exact distribution). Before the Monte Carlo
+        # writes, so that RECORDCI frees the shared pool only afterwards. "exact" skips the Monte Carlo writes below.
+        if exactfa is not None:
+            exactfa.write_all(wd,basescenario,fullpath,scenarioname)
         FP.tic('frequency: write parent + rank/write sub-durations')   # GP 2026-10-22: RAINYDAY_TIMERS
-        RainyDay.write_frequency_outputs(sortrain,exceedp,returnperiod,FreqFile,fullpath+'/'+scenarioname+'_FrequencyAnalysis.png',spreadtype,globals().get('quantilecalc'),nrealizations)
-        if recordci is not None:                      # GP 2026-10-26: RECORDCI outputs of the parent duration
+        # RainyDay.write_frequency_outputs(sortrain,exceedp,returnperiod,FreqFile,fullpath+'/'+scenarioname+'_FrequencyAnalysis.png',spreadtype,globals().get('quantilecalc'),nrealizations)   # GP 2026-10-26: old line
+        if not freqexact: RainyDay.write_frequency_outputs(sortrain,exceedp,returnperiod,FreqFile,fullpath+'/'+scenarioname+'_FrequencyAnalysis.png',spreadtype,globals().get('quantilecalc'),nrealizations)
+        # if recordci is not None:                    # GP 2026-10-26: old line; FREQENGINE "exact": written by ExactFA
+        if recordci is not None and not freqexact:    # GP 2026-10-26: RECORDCI outputs of the parent duration
             recordci.write(0,sortrain,exceedp,returnperiod,fullpath,scenarioname,spreadtype,globals().get('quantilecalc'))
 
         # GP 2026-10-21: MULTIPLEDURATIONS: rank and write every shorter duration to MAINPATH/<SCENARIONAME>_<d>/
-        for jd in range(0,len(subdurs)):
+        # for jd in range(0,len(subdurs)):           # GP 2026-10-26: old line; FREQENGINE "exact": no realizations
+        for jd in (range(0,len(subdurs)) if not freqexact else ()):
             mdname=basescenario+'_'+RainyDay.durtag(subdurs[jd])
             mdpath=wd+'/'+mdname
             os.makedirs(mdpath,exist_ok=True)

@@ -2,22 +2,33 @@
 """
 GP 2026-10-26: compare two RainyDay runs (IDF_A vs IDF_B) with the combined Monte Carlo + record CI of their difference.
 
-    python tools/compare_runs.py RUN_A RUN_B [--stat median|mean] [--margin 5] [--level 90] [--seed 42]
-                                 [--nboot-mc 10000] [--bh] [--out FILE.csv] [--durations 1 24 ...]
+    python tools/compare_runs.py RUN_A RUN_B [--stat median|mean|level] [--engine auto|montecarlo|exact] [--margin 5]
+                                 [--level 90] [--seed 42] [--nboot-mc 10000] [--bh] [--out FILE.csv]
+                                 [--durations 1 24 ...] [--returnperiods 100 ...]
     python tools/compare_runs.py --family PAIRS.txt [same options]       (one "RUN_A,RUN_B" per line; --bh over all)
 
 RUN_A, RUN_B: MAINPATH/<SCENARIONAME> of a MULTIPLEDURATIONS run (its <SCENARIONAME>_<d>/ folders are found), or the
-folder of a single-duration run. Both runs need UNCERTAINTY "all_realizations" and RECORDCI with RECORDSAVE "true"
-(_FreqAnalysis.csv with rlz columns, _RecordBootstrap.csv, _RecordDraws.csv), and the SAME record draws (record years,
-RECORDCI method, RECORDSEED, RECORDNBOOT, RECORDBLOCK): _RecordDraws.csv must match, else the tool stops.
+folder of a single-duration run. Both runs need RECORDCI with RECORDSAVE "true" (_RecordBootstrap.csv, _RecordDraws.csv)
+and the SAME record draws (record years, RECORDCI method, RECORDSEED, RECORDNBOOT, RECORDBLOCK): _RecordDraws.csv must
+match, else the tool stops. A Monte Carlo run needs UNCERTAINTY "all_realizations" (rlz columns in _FreqAnalysis.csv).
+GP 2026-10-26: a run may also be a FREQENGINE "exact" run (_FreqExact.csv, no realizations) or "both" (both files):
+  --engine  auto (default): the realizations of _FreqAnalysis.csv when the run has them, else _FreqExact.csv;
+            montecarlo / exact: force one (a "both" run counts as Monte Carlo under auto)
+  --stat    median (default; Monte Carlo runs only: the median of the realizations), mean (realizations, or the exact
+            `mean`, the noise-free value of the realization mean), level (the exact return level `level` of
+            _FreqExact.csv in both runs; record part from _RecordBootstrapLevel.csv, written by RECORDCI when FREQENGINE
+            is "exact" or "both")
+  An exact statistic has no Monte Carlo noise: its Monte Carlo bootstrap is the constant itself (both runs exact, or
+  --stat level: the Monte Carlo part is delta with zero width, and the CI is the record part only). Mixed pairs (Monte
+  Carlo vs exact) take the Monte Carlo part from the Monte Carlo run only.
 
 Per duration x return period (the rows both runs share):
-  delta     = 100 (stat_B - stat_A) / stat_A, stat = median (default) or mean of the realizations
+  delta     = 100 (stat_B - stat_A) / stat_A, stat = median (default) or mean of the realizations (or the exact values)
   Monte Carlo part: unpaired bootstrap of the realization statistic of each run (independent runs), --nboot-mc draws,
             np.random.default_rng(seed + d) (the indices of A, then of B: PUBLIC/FIGURES/sst_compare.delta_boot)
   record part: paired bootstrap records of the two runs (same drawn years): delta*_j = 100 (B*_j - A*_j) / A*_j of the
-            noise-free estimates (_RecordBootstrap.csv); deviations delta*_j - delta*_point (jackknife: normal
-            deviations with the jackknife SE of delta)
+            noise-free estimates (_RecordBootstrap.csv; --stat level: _RecordBootstrapLevel.csv); deviations
+            delta*_j - delta*_point (jackknife: normal deviations with the jackknife SE of delta)
   combined: every Monte Carlo draw plus an independent record deviation (record draw j uniform,
             np.random.default_rng(seed + 1000 + d))
   classes (the paper's rule, margin m, level L = 90 -> alpha = 0.05):
@@ -88,18 +99,25 @@ def classify(delta, eq_lo, eq_hi, d_lo, d_hi, margin, alpha, q_diff=None):
 # ---------------------------------------------------------------------------------------------------------------------
 # run files
 # ---------------------------------------------------------------------------------------------------------------------
+RESULTS = ("_FreqAnalysis.csv", "_FreqExact.csv")    # GP 2026-10-26: Monte Carlo and exact (FREQENGINE) results
+
+
+def _has_results(folder, name):
+    return any(os.path.exists(os.path.join(folder, name + s)) for s in RESULTS)
+
+
 def durations_of(run):
-    """{duration (float or None): (folder, name)} of a run stem or a single-duration run folder."""
+    """{duration (float or None): (folder, name)} of a run stem or a single-duration run folder (GP 2026-10-26: with a
+    _FreqAnalysis.csv or a _FreqExact.csv)."""
     run = os.path.abspath(run.rstrip("/"))
     base = os.path.basename(run)
-    if os.path.isdir(run) and os.path.exists(os.path.join(run, base + "_FreqAnalysis.csv")):
+    if os.path.isdir(run) and _has_results(run, base):
         m = re.search(r"_(\d+(?:\.\d+)?)$", base)
         return {float(m.group(1)) if m else None: (run, base)}
     out = {}
     for d in glob.glob(run + "_*"):
         tag = os.path.basename(d)[len(base) + 1:]
-        if os.path.isdir(d) and re.fullmatch(r"\d+(?:\.\d+)?", tag) and os.path.exists(
-                os.path.join(d, os.path.basename(d) + "_FreqAnalysis.csv")):
+        if os.path.isdir(d) and re.fullmatch(r"\d+(?:\.\d+)?", tag) and _has_results(d, os.path.basename(d)):
             out[float(tag)] = (d, os.path.basename(d))
     if not out:
         sys.exit("compare_runs: no FreqAnalysis results found for " + run)
@@ -129,14 +147,44 @@ def read_fa(folder, name):
     return np.round(df["returnperiod"].values.astype(float), 2), r.values.astype(float)
 
 
-def read_rec(folder, name):
-    f = os.path.join(folder, name + "_RecordBootstrap.csv")
+def read_exact(folder, name, column):
+    """GP 2026-10-26: one column (mean or level) of _FreqExact.csv (FREQENGINE 'exact'/'both')."""
+    f = os.path.join(folder, name + "_FreqExact.csv")
     if not os.path.exists(f):
-        sys.exit("compare_runs: missing " + f + " (RECORDCI with RECORDSAVE 'true')")
+        sys.exit("compare_runs: missing " + f + " (FREQENGINE 'exact' or 'both')")
+    df = pd.read_csv(f, comment="#", skipinitialspace=True)
+    return np.round(df["returnperiod"].values.astype(float), 2), df[column].values.astype(float)
+
+
+def read_result(folder, name, args):
+    """GP 2026-10-26: (engine, return periods, values): ('montecarlo', rp, realizations (rows x rlz)) or ('exact', rp,
+    the exact statistic per row), by --engine and --stat."""
+    has_rlz = False
+    fa = os.path.join(folder, name + "_FreqAnalysis.csv")
+    if os.path.exists(fa):
+        has_rlz = any(re.fullmatch(r"rlz\d+", c.strip()) for c in open(fa).readline().split(","))
+    if args.stat == "level" or args.engine == "exact" or (args.engine == "auto" and not has_rlz):
+        if args.stat == "median":
+            sys.exit("compare_runs: --stat median is a Monte Carlo statistic (the median of the realizations); %s has "
+                     "no realizations (FREQENGINE 'exact') or --engine exact was given: use --stat mean (the exact "
+                     "mean = the noise-free realization mean) or --stat level (the return level); the median of ONE "
+                     "realization's T-yr value is q50 in _FreqExact.csv" % name)
+        rp, v = read_exact(folder, name, "level" if args.stat == "level" else "mean")
+        return "exact", rp, v
+    rp, r = read_fa(folder, name)
+    return "montecarlo", rp, r
+
+
+def read_rec(folder, name, level=False):
+    # GP 2026-10-26: level=True: _RecordBootstrapLevel.csv (record bootstrap of the return level, --stat level)
+    f = os.path.join(folder, name + ("_RecordBootstrapLevel.csv" if level else "_RecordBootstrap.csv"))
+    if not os.path.exists(f):
+        sys.exit("compare_runs: missing " + f + " (RECORDCI with RECORDSAVE 'true'" +
+                 ("; the level bootstrap is written when FREQENGINE is 'exact' or 'both')" if level else ")"))
     df = pd.read_csv(f, skipinitialspace=True)
     cols = [c for c in df.columns if re.fullmatch(r"(rec|drop)\d+", c)]
-    return np.round(df["returnperiod"].values.astype(float), 2), df["sst_expected"].values.astype(float), \
-        df[cols].values.astype(float), cols
+    return np.round(df["returnperiod"].values.astype(float), 2), \
+        df["sst_level" if level else "sst_expected"].values.astype(float), df[cols].values.astype(float), cols
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -164,10 +212,12 @@ def compare_pair(A, B, args):
     rows = []
     for d in common:
         (fA, nA), (fB, nB) = da[d], db[d]
-        rpA, ra = read_fa(fA, nA)
-        rpB, rb = read_fa(fB, nB)
-        qA, ptA, recA, cA = read_rec(fA, nA)
-        qB, ptB, recB, cB = read_rec(fB, nB)
+        # rpA, ra = read_fa(fA, nA)                  # GP 2026-10-26: old lines; Monte Carlo or exact results
+        # rpB, rb = read_fa(fB, nB)
+        engA, rpA, ra = read_result(fA, nA, args)
+        engB, rpB, rb = read_result(fB, nB, args)
+        qA, ptA, recA, cA = read_rec(fA, nA, level=args.stat == "level")
+        qB, ptB, recB, cB = read_rec(fB, nB, level=args.stat == "level")
         if cA != cB:
             sys.exit("compare_runs: %s and %s have different record columns" % (nA, nB))
         for T in [t for t in rpA if t in set(rpB)]:
@@ -175,13 +225,22 @@ def compare_pair(A, B, args):
                 continue
             i, j = int(np.where(rpA == T)[0][0]), int(np.where(rpB == T)[0][0])
             ir, jr = int(np.where(qA == T)[0][0]), int(np.where(qB == T)[0][0])
-            a, b = ra[i][np.isfinite(ra[i])], rb[j][np.isfinite(rb[j])]
-            sa, sb = stat(a), stat(b)
+            # GP 2026-10-26: an exact statistic (FREQENGINE) is a constant: no Monte Carlo bootstrap for that run
+            # a, b = ra[i][np.isfinite(ra[i])], rb[j][np.isfinite(rb[j])]
+            # sa, sb = stat(a), stat(b)
+            a = ra[i][np.isfinite(ra[i])] if engA == "montecarlo" else None
+            b = rb[j][np.isfinite(rb[j])] if engB == "montecarlo" else None
+            sa = stat(a) if a is not None else float(ra[i])
+            sb = stat(b) if b is not None else float(rb[j])
             delta = 100. * (sb - sa) / sa
             dseed = int(round(d)) if d is not None else 0
             rng = np.random.default_rng(args.seed + dseed)
-            ma = stat(a[rng.integers(0, a.size, (args.nboot_mc, a.size))], axis=1)
-            mb = stat(b[rng.integers(0, b.size, (args.nboot_mc, b.size))], axis=1)
+            # ma = stat(a[rng.integers(0, a.size, (args.nboot_mc, a.size))], axis=1)
+            # mb = stat(b[rng.integers(0, b.size, (args.nboot_mc, b.size))], axis=1)
+            ma = stat(a[rng.integers(0, a.size, (args.nboot_mc, a.size))], axis=1) if a is not None else \
+                np.full(args.nboot_mc, sa)
+            mb = stat(b[rng.integers(0, b.size, (args.nboot_mc, b.size))], axis=1) if b is not None else \
+                np.full(args.nboot_mc, sb)
             mc = 100. * (mb - ma) / ma
             rec = 100. * (recB[jr] - recA[ir]) / recA[ir]
             rec_pt = 100. * (ptB[jr] - ptA[ir]) / ptA[ir]
@@ -205,6 +264,7 @@ def compare_pair(A, B, args):
             r["comb_ci%s_lo" % ld], r["comb_ci%s_hi" % ld] = np.percentile(comb, qd)
             r["p_tost_mc"], r["p_diff_mc"] = p_tost(mc, args.margin), p_min_effect(mc, delta, args.margin)
             r["p_tost"], r["p_diff"] = p_tost(comb, args.margin), p_min_effect(comb, delta, args.margin)
+            r["engine_a"], r["engine_b"] = engA, engB             # GP 2026-10-26: montecarlo or exact
             r["_le"], r["_ld"] = le, ld
             rows.append(r)
     return rows
@@ -236,7 +296,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("runs", nargs="*", help="RUN_A RUN_B")
     ap.add_argument("--family", help="text file, one 'RUN_A,RUN_B' pair per line (BH with --bh over all rows)")
-    ap.add_argument("--stat", choices=("median", "mean"), default="median")
+    # ap.add_argument("--stat", choices=("median", "mean"), default="median")   # GP 2026-10-26: old line
+    ap.add_argument("--stat", choices=("median", "mean", "level"), default="median")
+    ap.add_argument("--engine", choices=("auto", "montecarlo", "exact"), default="auto",
+                    help="result of each run: auto = realizations if present, else _FreqExact.csv (GP 2026-10-26)")
     ap.add_argument("--margin", type=float, default=5.)
     ap.add_argument("--level", type=float, default=90.)
     ap.add_argument("--seed", type=int, default=42)

@@ -16,12 +16,24 @@ GP 2026-10-26: unit tests of RECORDCI (Source/RainyDay_utilities_Py3/fast_record
  5. year draws: block 1 == np.random.default_rng(seed).integers(0, NY, (B, NY)) (the prototype's draws); moving
     blocks are runs of consecutive record years; counts and jackknife weights
  6. helpers: THR32 (float32 rounding at 0.5), cum_counts vs brute force, option parsing (strings and JSON booleans)
+GP 2026-10-26: FREQENGINE (exact engine, fast_record.ExactFA and the new Pool methods):
+ 7. Pool._values_at vs the sorted expanded values (weights, pool extension)
+ 8. Pool.cdf / Pool.quantiles / Pool.expected_minmax / Pool.expected vs the direct simulation simulate(), PDS and AMS,
+    all-ones and sparse weights (including rows where P(fewer than k events) is large: -9999), on gamma pools with
+    zeros and ties and on pools of synthetic storms (storm_values) at timeres 60 and 30 min: quantile definition
+    (P(X <= Q) >= q >= P(X < Q)) exactly on the pool and within the binomial error of the simulation, CDF within
+    4.5 SE, expected minimum / maximum of N realizations within 4.5 SE; F(-9999) = P(fewer than k events)
+ 9. rows: selected_rows and ExactFA.exceedp/returnperiod == RainyDay.rank_frequency's, bitwise (RETURNLEVELS lists,
+    'all', NYEARS 100 and 1000)
+10. ExactFA mean / level == RecordCI sst_expected / sst_level bitwise (one group vs the record years, shared pool)
+11. FREQENGINE parsing and the check_options message
 """
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
-from scipy.special import gammainc
+from scipy.special import gammainc, gammaincc
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Source"))
 import RainyDay_utilities_Py3.RainyDay_functions as RDF   # noqa: E402
@@ -395,6 +407,190 @@ def test_helpers():
     report(ok, "option parsing (strings, JSON booleans, numeric strings; invalid values stop)")
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# GP 2026-10-26: FREQENGINE (exact engine)
+# ---------------------------------------------------------------------------------------------------------------------
+def test_values_at():
+    rng = np.random.default_rng(21)
+    n, nv, G = 30, 200, 10
+    vals = rng.gamma(0.6, 12., (n, nv)).astype(np.float32)
+    vals[rng.random(vals.shape) < 0.2] = 0.
+    groups = np.arange(n) // 3
+    bad, tot = 0, 0
+    for w in (np.ones(G, np.int64), np.array([2, 0, 1, 3, 0, 1, 1, 0, 2, 1])):
+        pool = FR.Pool(vals, groups, G, 50.)                   # tiny pool: forces extensions
+        v = np.sort(expanded(vals, groups, w))[::-1]
+        ms = np.r_[rng.integers(1, v.size + 1, 300), 1, v.size, v.size + 1, 0]
+        got = pool._values_at(w, ms)
+        ref = np.array([v[m - 1] if 1 <= m <= v.size else FR.MISSING for m in ms])
+        bad += int(np.sum(got != ref))
+        tot += ms.size
+    report(bad == 0, "_values_at vs the sorted expanded values (weights, pool extensions, m = 0 / > Wt -> -9999): "
+           "%d of %d differ" % (bad, tot))
+
+
+def storm_pool(timeres, n, rng):
+    """(n, nv) pool of synthetic storms (storm_values, parent 24 h without duration correction) at timeres."""
+    trim = np.array([[0, .3, 1, 1, .2], [.5, 1, 1, 1, .8], [.6, 1, 1, 1, 1], [0, .1, .9, .4, 0]], dtype=np.float32)
+    T = 24 if timeres == 60 else 48
+    out = [FR.storm_values(synthetic_storm(rng, T, 22, 27), trim, np.sum(trim), timeres / 60., [T], [True], None)[0]
+           for _ in range(n)]
+    return np.vstack(out)
+
+
+def test_exact_vs_simulation():
+    """quantiles, CDF, expected min/max (and expected) vs RainyDay's resampling simulated directly (simulate)."""
+    rng = np.random.default_rng(2027)
+    R, Nr = 40000, 20                       # simulated realizations; realizations per min/max group
+    probs = np.array([0.05, 0.25, 0.5, 0.75, 0.95, 0.01, 0.99])
+    pools = []
+    v = rng.gamma(0.8, 10., (12, 40)).astype(np.float32)
+    v[rng.random(v.shape) < 0.1] = 0.
+    v[2, :10] = v[5, :10]                   # ties
+    pools.append(("gamma pool", v, np.arange(12) // 2, 6, 40, np.array([40, 20, 10, 4, 1])))
+    for tr in (60, 30):
+        sp = storm_pool(tr, 8, rng)
+        pools.append(("storms timeres %d" % tr, sp, np.arange(8) // 2, 4, 40, np.array([40, 20, 10, 4, 1])))
+    for label, vals, groups, NY, nsim, ks in pools:
+        for calctype in ("pds", "ams"):
+            for w in (np.ones(NY, np.int64), np.r_[1, np.zeros(NY - 1, np.int64)]):   # sparse: many -9999 rows
+                pool = FR.Pool(vals, groups, NY, FR.m_needed(vals.shape[1], ks, NY, nsim, calctype))
+                sim = simulate(vals, groups, w, NY, nsim, ks, calctype, R, rng)
+                Q = pool.quantiles(w[None], ks, probs, NY, nsim, calctype)[0]                # (nk, nq)
+                F, S = pool.cdf(w, ks, np.unique(np.r_[Q.ravel(), -9999.]), NY, nsim, calctype)
+                xs = np.unique(np.r_[Q.ravel(), -9999.])
+                # 1. definition, exactly on the pool: F(Q) >= q >= F(Q-) (Q- = the next float32 below Q)
+                defin, simq, worst = 0, 0, 0.
+                for a in range(len(ks)):
+                    for b, q in enumerate(probs):
+                        x = Q[a, b]
+                        Fq = F[a, np.searchsorted(xs, x)]
+                        xm = np.nextafter(np.float32(x), np.float32(-np.inf)) if x > 0 else -1e30
+                        Fm = pool.cdf(w, ks[a:a + 1], [xm], NY, nsim, calctype)[0][0, 0] if x != FR.MISSING else 0.
+                        defin += not (Fq >= q - 1e-12 and Fm <= q + 1e-12)
+                        # 2. simulation: P(X <= Q) >= q >= P(X < Q) within the binomial error
+                        se = np.sqrt(q * (1 - q) / R)
+                        le, lt = np.mean(sim[:, a] <= x), np.mean(sim[:, a] < x)
+                        simq += not (le >= q - 4.5 * se and lt <= q + 4.5 * se)
+                        worst = max(worst, (q - le) / se, (lt - q) / se)
+                # 3. CDF vs the empirical CDF at the quantiles and at -9999 (exact binomial test of the counts)
+                cnt = np.sum(sim[:, :, None] <= xs[None, None, :], axis=0)                 # (nk, nx)
+                pc = binom_p(cnt, R, F)
+                Pall = pool._prob(ks.astype(float), nsim * pool._totals(w)[1] / (NY * pool.nv) if calctype == "pds"
+                                  else pool._totals(w)[1] / (NY * pool.nv), nsim, calctype)
+                miss = np.allclose(F[:, 0], 1. - Pall, rtol=1e-12, atol=1e-14)
+                # 4. expected minimum / maximum of Nr realizations, and the mean. A -9999 row (fewer than k events)
+                # can have a tiny probability (e.g. 1e-7) that still moves the mean by ~1e-3 x 9999: the simulation
+                # cannot resolve it, so each expectation is checked as two parts: P(-9999) (binomial test of the
+                # count of -9999) and the rest, E[X; X >= 0] = E[X] + 9999 P(-9999) (|z| of the simulated mean)
+                emin, emax = pool.expected_minmax(w[None], ks, NY, nsim, Nr, calctype)
+                ex = pool.expected(w[None], ks, NY, nsim, calctype)[0]
+                g = sim[:R // Nr * Nr].reshape(R // Nr, Nr, len(ks))
+                mn, mx = g.min(axis=1), g.max(axis=1)
+                pmiss = (-np.expm1(Nr * np.log(Pall)), np.exp(Nr * np.log1p(-Pall)), 1. - Pall)   # min, max, X
+                z, pm = [], []
+                for e, s, p in zip((emin[0], emax[0], ex), (mn, mx, sim), pmiss):
+                    pm.append(binom_p(np.sum(s == FR.MISSING, axis=0), s.shape[0], p).min())
+                    cont = e - FR.MISSING * p                                    # E[X; X >= 0]
+                    sp = np.where(s == FR.MISSING, 0., s)
+                    se = sp.std(axis=0, ddof=1) / np.sqrt(s.shape[0])
+                    dz = np.abs(sp.mean(axis=0) - cont)
+                    zz = np.where(se > 0, dz / np.maximum(se, 1e-300), np.where(dz < 1e-6, 0., np.inf))
+                    # the rest is tested where the simulation holds >= 500 non-missing values in expectation
+                    z.append(np.where((1. - p) * s.shape[0] >= 500, zz, 0.))
+                nmiss = int(np.sum(Q == FR.MISSING))
+                ok = defin == 0 and simq == 0 and pc.min() > 1e-5 and miss and max(zz.max() for zz in z) < 4.5 \
+                    and min(pm) > 1e-5
+                report(ok, "exact vs simulation (%s, %s, weights %s; %d -9999 quantiles): quantile definition on the "
+                       "pool %d bad, vs simulation %d bad (worst %.2f SE); CDF binomial p min %.1e; F(-9999) = P(N < k) "
+                       "%s; E[min], E[max] of %d, E[X]: |z| max %.2f, %.2f, %.2f, P(-9999) binomial p min %.1e"
+                       % (label, calctype.upper(), "ones" if w.sum() == NY else w.tolist(), nmiss, defin, simq, worst,
+                          pc.min(), miss, Nr, z[0].max(), z[1].max(), z[2].max(), min(pm)))
+
+
+def binom_p(c, n, p):
+    """two-sided exact binomial p-value of the counts c ~ Binomial(n, p) (elementwise)"""
+    from scipy.stats import binom
+    c, p = np.broadcast_arrays(np.asarray(c, float), np.clip(np.asarray(p, float), 0., 1.))
+    out = np.minimum(1., 2. * np.minimum(binom.cdf(c, n, p), binom.sf(c - 1, n, p)))
+    return np.where((p == 0) & (c == 0) | (p == 1) & (c == n), 1., out)
+
+
+def test_rows():
+    bad = []
+    for nsim in (100, 1000):
+        for spec in ([2, 5, 10, 25, 50, 100, 200, 250, 500, 1000], [1, 1.5, 2, 7, 33.3, 100], "all"):
+            alll = spec == "all"
+            sl = None
+            if not alll:
+                sl = np.float32(spec)
+                sl = sl[sl <= nsim + 0.00001]
+                sl = sl[sl >= 0.99999]
+            wr = np.random.default_rng(1).gamma(1., 10., (4, nsim, 3, 1)).astype(np.float32)
+            _, ex, rp = RDF.rank_frequency(wr, "pds", nsim, alll, sl)
+            rows, exf = FR.selected_rows(nsim, alll, sl)
+            efa = FR.ExactFA("exact", [24.], [24], True, np.ones((1, 1), np.float32), 1., 60, (5, 6), None, 2, 3, "pds",
+                             nsim, 4, alll, sl, "ensemble", None)
+            if not (np.array_equal(exf[rows], ex) and np.array_equal(efa.exceedp, ex) and
+                    np.array_equal(efa.returnperiod, rp) and np.array_equal(efa.ks, nsim - rows)):
+                bad.append((nsim, str(spec)))
+    report(not bad, "rows: selected_rows and ExactFA exceedp/returnperiod == RainyDay.rank_frequency bitwise "
+           "(NYEARS 100/1000, RETURNLEVELS lists and 'all')%s" % ("" if not bad else ": " + str(bad)))
+
+
+def test_exact_vs_recordci():
+    """ExactFA (one group, shared pool) vs RecordCI (record-year groups): mean == sst_expected, level == sst_level,
+    bitwise, for PDS and AMS; ExactFA on its own pool gives the same numbers."""
+    rng = np.random.default_rng(5)
+    trim = np.array([[0, .3, 1, 1], [.5, 1, 1, .8], [.6, 1, 1, 1]], dtype=np.float32)
+    H, W, T, n = 20, 24, 24, 12
+    storms = [synthetic_storm(rng, T, H, W) for _ in range(n)]
+    years = np.repeat(np.arange(2002, 2006), 3)
+    cattime = np.array([[np.datetime64("%d-07-01T00:00" % y) + np.timedelta64(h, "h") for h in range(T)] for y in years])
+    steps, durs = [T, 1, 6], [24., 1., 6.]
+    ok, msg = True, []
+    for calctype in ("pds", "ams"):
+        with tempfile.TemporaryDirectory() as d:
+            opts = FR.parse_options({"RECORDCI": "bootstrap", "RECORDNBOOT": 10})
+            rc = FR.RecordCI(opts, durs, steps, True, trim, np.sum(trim), 60, (H, W), None, cattime, list(range(2002, 2006)),
+                             4, calctype, 100, False, np.float32([2, 5, 10, 25, 50, 100]), d, "t")
+            ex = FR.ExactFA("both", durs, steps, True, trim, np.sum(trim), 60, (H, W), None, n, 4, calctype, 100, 10,
+                            False, np.float32([2, 5, 10, 25, 50, 100]), "ensemble", None, record=rc)
+            alone = FR.ExactFA("exact", durs, steps, True, trim, np.sum(trim), 60, (H, W), None, n, 4, calctype, 100,
+                               10, False, np.float32([2, 5, 10, 25, 50, 100]), "ensemble", None)
+            for i, s in enumerate(storms):
+                rc.add_storm(i, s)
+                alone.add_storm(i, s)
+            for j in range(len(steps)):
+                a = ex.compute(j)
+                b = rc.estimates(j, ex.ks)
+                c = alone.compute(j)
+                same = (np.array_equal(a["mean"], b["ex_pt"]) and np.array_equal(a["level"], b["lv_pt"]) and
+                        all(np.array_equal(a[k], c[k]) for k in ("mean", "level", "q", "exp_min", "exp_max")))
+                ok &= same and ex.shared and rc.write_level and ex.pool is rc.pool
+                msg.append("%s %gh %s" % (calctype.upper(), durs[j], "ok" if same else "DIFFER"))
+    report(ok, "ExactFA mean/level == RecordCI sst_expected/sst_level bitwise (shared pool, one group vs record years), "
+           "== ExactFA on its own pool: " + ", ".join(msg))
+
+
+def test_engine_options():
+    P = FR.parse_engine
+    ok = P({}) == "montecarlo" and P({"FREQENGINE": "Exact"}) == "exact" and P({"FREQENGINE": " both "}) == "both"
+    for bad in ({"FREQENGINE": "mc"}, {"FREQENGINE": True}, {"FREQENGINE": 1}):
+        try:
+            P(bad)
+            ok = False
+        except SystemExit:
+            pass
+    try:
+        FR.check_options(None, True, "uniform", "poisson", "pds", "basin", "none", False, False, True, False,
+                         who="FREQENGINE 'exact'")
+        ok = False
+    except SystemExit as e:
+        ok &= "FREQENGINE 'exact'" in str(e) and "SCENARIOS" in str(e)
+    report(ok, "FREQENGINE parsing (montecarlo default, case, invalid values stop) and the check_options message")
+
+
 def main():
     test_helpers()
     test_draws()
@@ -402,6 +598,11 @@ def main():
     test_vs_prototype()
     test_expected_vs_simulation()
     test_pool_vs_rainyday()
+    test_engine_options()                    # GP 2026-10-26: FREQENGINE
+    test_values_at()
+    test_rows()
+    test_exact_vs_recordci()
+    test_exact_vs_simulation()
     print("ALL PASS" if RES and all(RES) else "SOME TESTS FAILED (%d of %d)" % (RES.count(False), len(RES)))
     sys.exit(0 if RES and all(RES) else 1)
 

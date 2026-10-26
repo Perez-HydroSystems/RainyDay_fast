@@ -200,6 +200,121 @@ without duration correction.
 - The bootstrap cannot create storms larger than those observed, so the CIs at 500–1000 yr are lower bounds.
 - Memory: durations × storms × locations × 4 bytes (Iowa pixel, 7 durations, 400 storms, 35,416 locations: 0.4 GB).
 
+### Exact frequency engine: `FREQENGINE` (GP 2026-10-26)
+
+RainyDay estimates the frequency curve by Monte Carlo. It draws `NREALIZATIONS` synthetic records of `NYEARS` years
+each, ranks every record, and reports the mean and the spread of the realizations. Those values carry Monte Carlo noise.
+
+Under uniform transposition and Poisson resampling, the process RainyDay samples is known exactly once every storm has
+been evaluated at every transposition location. This is the same storm × location pool that `RECORDCI` builds.
+`FREQENGINE` computes the frequency analysis from that pool, in closed form, with no noise and no random numbers.
+
+```json
+"FREQENGINE": "exact"
+```
+
+| Value | What runs | Outputs per duration |
+|---|---|---|
+| `"montecarlo"` (default) | RainyDay's realizations, as before | `_FreqAnalysis.csv`, `_FrequencyAnalysis.png` (unchanged) |
+| `"exact"` | the exact engine only; no synthetic years are drawn | `_FreqExact.csv`, `_FreqExact.png`; no `_FreqAnalysis.csv` |
+| `"both"` | both engines | every Monte Carlo output, **bit-identical**, plus `_FreqExact.csv/.png` |
+
+**What it computes.** Each row of the table is a return period T: the same rows as `_FreqAnalysis.csv` (`RETURNLEVELS`).
+The Monte Carlo value of a row is X_(k), with k = NYEARS/T:
+- PDS: the k-th largest storm of the NYEARS synthetic years;
+- AMS: the k-th largest annual maximum.
+
+The exact engine gives the distribution of X_(k) under RainyDay's model:
+- Poisson storm counts with λ = storms/years of the record;
+- storms equally likely, transposition locations equally likely.
+
+Let Λ(x) be the number of storms (PDS) or years (AMS) per year with a depth above x, taken from the pool. Then:
+- PDS: P(X_(k) ≤ x) = P(Poisson(NYEARS·Λ(x)) < k);
+- AMS: P(X_(k) ≤ x) = P(Binomial(NYEARS, 1 − e^(−Λ(x))) < k).
+
+| Column | Meaning |
+|---|---|
+| `mean` | E[X_(k)]: the **noise-free value of RainyDay's estimate**, the mean of the realizations. It depends on NYEARS. |
+| `level` | the **return level** of the same model: Λ(x_T) = 1/T (PDS) or −ln(1 − 1/T) (AMS). It does not depend on NYEARS. |
+| `q05` … `q95` | quantiles of X_(k): the distribution of the T-yr value of **one** realization (one `rlz` column). A numeric `UNCERTAINTY` adds its quantile pair, e.g. `q10`/`q90`. |
+| `exp_min_N`, `exp_max_N` | the expected minimum and maximum of N = `NREALIZATIONS` realizations: the noise-free values of RainyDay's `minrain`/`maxrain`. |
+
+**`mean` or `level`?**
+- `mean` is what RainyDay reports. Use it when the exact run must reproduce, or replace, a Monte Carlo run.
+- `level` is the T-yr depth of the fitted model. The mean of the k-th largest of NYEARS years is a biased estimate of it.
+  The two differ most near T ≈ NYEARS. In the validation matrix (NYEARS 1000, 4 basins × 7 durations), mean − level
+  has these medians (and maxima):
+
+  | T | Median (max) |
+  |---|---|
+  | 10 yr | 0.1 % (0.2 %) |
+  | 100 yr | 0.7 % (3.3 %) |
+  | 500 yr | 2.3 % (6.3 %) |
+  | 1000 yr | 2.7 % (8.9 %) |
+- **To get T ≪ NYEARS, raise NYEARS.** In exact mode this costs only pool depth, not time. Rows only exist for
+  T ≤ NYEARS.
+
+**Conventions:**
+- **Values:** in mm. −9999 means "no event", as in RainyDay, and enters `mean` and `exp_*` with its probability, as it
+  does in RainyDay's mean of the realizations.
+- **Quantiles:** Q(q) = min{x: P(X_(k) ≤ x) ≥ q}, using the strict count of pool values > x, so every quantile is an
+  exact pool value. Ties and the atom at 0 are exact. Q(q) = −9999 where P(fewer than k events) ≥ q.
+- **Accuracy:** `mean` and `exp_*` come from a trapezoid on a 20,000-point grid, as RECORDCI's `sst_expected`; the
+  relative error is about 1e-5. `level` and the quantiles are exact.
+- **Not CIs:** the quantiles and `exp_*` describe the ensemble spread for this storm catalog. The uncertainty from the
+  short record is `RECORDCI`.
+
+**Outputs.**
+
+```
+<scen>_24/
+  <scen>_24_FreqExact.csv   prob.exceed, returnperiod, mean, level, q05, q25, q50, q75, q95, exp_min_<N>, exp_max_<N>
+                            ('#' lines first: read it with comment='#')
+  <scen>_24_FreqExact.png   RainyDay's plot style: exact mean (blue), band (dodgerblue: expected min-max of N, or the
+                            UNCERTAINTY quantile range), return level (dashed)
+```
+
+`"exact"` writes no `_FreqAnalysis.csv`, because there are no realizations. Scripts that read the `rlz` columns need
+`"montecarlo"` or `"both"`.
+
+**Speed.** An `"exact"` run skips the draws, the transposition of every draw and the ranking. What remains is the
+catalog (scan or `CATALOGPATH`), one read of every storm, the per-storm pool and the estimators. Measured times are in
+`README_CHANGES.md` B8.
+
+**With `RECORDCI`.** The two options share one pool. In `"exact"` mode, `_RecordCI.csv` is computed from the exact
+distribution:
+- `rd_mean` is the exact mean, with no Monte Carlo error;
+- `ens_lo/hi` is the exact band;
+- `pred_lo/hi` combines 1,000 equally probable quantiles of X_(k) with the record deviations.
+
+`sst_expected` is unchanged: it equals the exact `mean` bitwise when `INCLUDEYEARS` is set.
+
+With `FREQENGINE` on, RECORDCI also writes `<name>_RecordBootstrapLevel.csv`, the record bootstrap of `sst_level`, for
+`compare_runs.py --stat level`.
+
+**`compare_runs.py` with exact runs.**
+- `--engine auto|montecarlo|exact`. `auto` uses the realizations when a run has them, else `_FreqExact.csv`.
+- `--stat mean|level` work with exact runs. `median` is the median of the realizations, so it needs Monte Carlo runs.
+- An exact statistic has no Monte Carlo noise. With two exact runs, the CI of Δ is the record part only.
+- Mixed pairs (Monte Carlo vs exact) are allowed: the Monte Carlo part comes from the Monte Carlo run alone.
+
+**Scope.** The same as `RECORDCI`: uniform transposition (irregular or rectangular domain), `RESAMPLING` poisson,
+`CALCTYPE` pds or ams, `POINTAREA` watershed or box, one duration or `MULTIPLEDURATIONS`. Other settings stop the run at
+the start.
+
+**When to use which engine.**
+- `"exact"`: frequency analysis only, e.g. depth-frequency or IDF curves and comparisons between basins or settings. It
+  gives noise-free differences, fast large-T tables (raise NYEARS), and large campaigns.
+- `"montecarlo"`: when you need the synthetic storm sequences (`SCENARIOS`, flood modelling), the realizations
+  themselves, or a setting outside the exact engine's scope.
+- `"both"`: to check one engine against the other, or to keep `_FreqAnalysis.csv` readers working while adding the
+  exact values.
+
+**Checks.**
+- `tools/verify_exact_engine.py <variant>` compares a `"both"` run's exact values with its realizations. The run must
+  be made with `RAINYDAY_DUMP_EXACTPOOL=<dir>`, which saves the pool of every duration.
+- `tools/test_record_ci.py` holds the unit tests.
+
 ## RainyDay_mod
 
 > **About this fork.** This is a modified clone of the original RainyDay repository

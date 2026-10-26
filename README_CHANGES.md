@@ -263,6 +263,144 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
     (unit test against the exact step-function integral), far below the Monte Carlo error.
   - Memory: durations × storms × locations × 4 bytes (Iowa pixel, 7 × 400 × 35,416: 378 MB).
 
+### B8. Exact frequency engine, `FREQENGINE` (GP 2026-10-26). Status: done and verified (branch `fast/exact`).
+- **Commit:** see the `fast/exact` log; the module, hooks, tools and docs are in one commit.
+- **What.** An optional JSON setting: `"montecarlo"` (default, unchanged), `"exact"` or `"both"`.
+  - The exact engine computes the frequency analysis of RainyDay's SST model from the complete storm × location pool,
+    without Monte Carlo noise.
+  - For every FreqAnalysis row, X_(k) (k-th largest event of NYEARS synthetic years, PDS; or k-th largest annual
+    maximum, AMS), it writes:
+    - `mean` = E[X_(k)], the noise-free value of RainyDay's realization mean;
+    - `level`, the return level (Λ(x_T) = 1/T or −ln(1 − 1/T));
+    - the 5/25/50/75/95 % quantiles of X_(k) (plus the numeric `UNCERTAINTY` pair);
+    - the expected minimum and maximum of NREALIZATIONS realizations.
+  - Files per duration: `<name>_FreqExact.csv` (with `#` definition lines) and `<name>_FreqExact.png` (RainyDay's
+    plot style).
+  - With RECORDCI in `"exact"` mode, `_RecordCI.csv` uses the exact distribution. With FREQENGINE on, RECORDCI also
+    writes `_RecordBootstrapLevel.csv`.
+- **How** (`Source/RainyDay_utilities_Py3/fast_record.py`):
+  1. `StormPool`: the per-storm pool of RECORDCI, moved out of `RecordCI` with unchanged arithmetic. One pool per run,
+     shared when both options are on.
+  2. New `Pool` methods; `levels` and `expected` are unchanged:
+     - `quantiles`: the inverse through `gammaincinv` (PDS) or `betaincinv` (AMS), then the pool value of rank
+       floor(c*) + 1. This is exact, including ties and the atom at 0, and gives −9999 where P(fewer than k events) ≥ q;
+     - `cdf`;
+     - `expected_minmax`: survival Pᴺ and 1 − (1 − P)ᴺ in the `expected` trapezoid.
+  3. `ExactFA`: per duration, a fresh `Pool` with the same construction and call order as `RecordCI.estimates`, and
+     RainyDay's own `nyears` as the divisor of the storm rate. So `mean` equals `sst_expected` bitwise when RECORDCI's
+     record years count the same.
+  4. Hooks in `RainyDay_Py3.py`, marked `GP 2026-10-26`, with every replaced line kept as a comment and no block
+     re-indented:
+     - in exact mode, an `if freqexact:` branch ahead of the sampling `elif` chain, and one-line or `and not freqexact`
+       guards on the draws, allocations, `StormSelector`, −9999 marks, whichrain dump, ranking and Monte Carlo writes;
+     - in the storm loop, `add_storm` then `continue` right after reading `catrain`;
+     - `exactfa.write_all(...)` before the Monte Carlo writes.
+  5. Tools:
+     - `tools/verify_exact_engine.py`: exact vs realizations of a `"both"` run;
+     - `compare_runs.py --engine auto|montecarlo|exact --stat mean|median|level`;
+     - `RAINYDAY_DUMP_EXACTPOOL`: the pool dump for the verification;
+     - 16 new unit tests in `tools/test_record_ci.py`.
+- **Why.** The Monte Carlo estimate carries sampling noise. For frequency analysis only (IDF curves, comparisons
+  between basins), the exact engine removes it at almost no cost, and gives the ensemble spread as exact bands. Large T
+  only needs a larger NYEARS, which costs pool depth, not draws.
+- **Effect on results.**
+  - `"montecarlo"` and `"both"`: none. Every Monte Carlo output is bit-identical; no `np.random` call was added,
+    removed or moved.
+  - `"exact"`: **by design, the random draws are skipped**. No `np.random` call happens after `np.random.seed(0)`, and
+    no realizations or `_FreqAnalysis.csv` are written. The catalogs are built before any random call and are
+    identical.
+- **Verified** (2026-10-26, Mac M3 Max, RainyDay_Env; outputs in `/Users/gjperezm/Databases/RainyDay_fast_tests`):
+  - **Bit-identity**, validation matrix (5 shapes, production settings), `ref` = main `b63865a`:
+    - `compare_dumps ref off2 --catalogs` (this branch, option absent) and `ref both --catalogs`: ALL PASS, 80 checks
+      each (35 raw-depth dumps, 35 FreqAnalysis CSVs, 5 light catalogs);
+    - all 55 PNGs of `both` byte-identical to `ref`.
+    - With RECORDCI (B = 200), variants `on2` (Monte Carlo), `on_both` and `on_exact`:
+      - `compare_dumps ref on2|on_both --catalogs` ALL PASS;
+      - `_RecordCI.csv` and `_RecordBootstrap.csv` of `on2` and `on_both` byte-identical (35/35) to `fast/record`'s
+        `on` (the StormPool refactor changes nothing);
+      - `_RecordBootstrap.csv` and `_RecordBootstrapLevel.csv` of `on_exact` byte-identical to `on_both`.
+  - **`"exact"`:**
+    - 5/5 light catalogs bitwise equal to `ref` (`compare_dumps.compare_light_catalogs`);
+    - 35 `_FreqExact.csv`, and no `_FreqAnalysis.csv`, PNG or raw-depth dump;
+    - every `_FreqExact.csv` byte-identical to `both`'s (35/35).
+  - **Exact vs Monte Carlo** (`tools/verify_exact_engine.py both`; 322 cells: 4 basins × 7 durations × 10 T and Talequah
+    7 × 6):
+    - rows, realizations and quantile columns consistent in all 35 durations;
+    - **mean**: |z| ≤ 2.64 for the 280 Iowa/Texas cells (z = (rd_mean − mean)/(sd/√100); 1.8 % beyond 2). Talequah has
+      5 realizations: max |t| = 3.87 (t, 4 df: p = 0.018; 3 durations of the same realizations);
+    - **quantiles**: of the 5 × 322 cells, 1603/1610 lie inside the order-statistic 99 % binomial band of the 100
+      realizations, and 1570/1610 inside the 95 % band;
+    - **observed minimum / maximum** of the realizations inside the central 90 % of the exact distribution of the
+      min/max of N draws: 288/322 (89.4 %) and 289/322 (89.8 %).
+  - **mean − level** (NYEARS 1000):
+
+    | T | Median (max) |
+    |---|---|
+    | 10 yr | 0.09 % (0.22 %) |
+    | 100 yr | 0.7 % (3.3 %) |
+    | 500 yr | 2.3 % (6.3 %) |
+    | 1000 yr | 2.7 % (8.9 %) |
+
+  - **Unit tests:** `tools/test_record_ci.py`, 44 PASS (28 existing + 16 new). They check `quantiles`, `cdf`,
+    `expected_minmax` and `expected` against the direct simulation `simulate()`, for PDS and AMS:
+    - all-ones and sparse weights (rows with many −9999);
+    - gamma pools with ties and zeros, and pools of synthetic storms at timeres 60 and 30.
+
+    They also check `_values_at` against the sorted expanded values, the rows against `rank_frequency` bitwise, the
+    `mean`/`level` of `ExactFA` against RecordCI's `sst_expected`/`sst_level` bitwise, and the option parsing.
+  - **RECORDCI + exact vs RECORDCI + both** (28 Iowa/Texas files):
+    - `sst_expected`, `sst_level`, `rec_lo/hi/se` identical;
+    - `rd_mean` = the exact mean = `sst_expected` bitwise.
+    - Relative to the Monte Carlo values: `rd_mean` within 0.7 % (median; max 3.0 %, Monte Carlo noise). The `ens`
+      bands differ by 3–4 % (median; max 18 %): the exact expected min/max of 100 vs one observed min/max. `pred`
+      differs by about 1 % (max 7 %), and the `est` width ratio is 0.99.
+  - **`compare_runs.py`**, Iowa HUC-8 07100006 raw vs rg (`CATALOGPATH`, RECORDCI B = 1000, seed 20261026;
+    `runs/hucexact`):
+    - exact pair: Δ(`mean`) equals Δ(`sst_expected`) exactly; the Monte Carlo CI has zero width; the combined CI equals
+      the record CI within 0.12 pp (resampling of the record deviations); `--stat level` runs too;
+    - classes vs the Monte Carlo pair (`runs/val/HUC`, `--stat mean`): 66/70 equal. The 4 others are
+      inconclusive → equivalent with the exact engine (3 h 200 yr, 6/12/48 h 1000 yr), where the Monte Carlo noise had
+      widened the CI;
+    - the mixed pair (Monte Carlo raw vs exact rg) runs;
+    - the Monte Carlo pair gives exactly the old `compare/huc07100006_T100.csv` (`engine_a`/`engine_b` columns added).
+  - **Runtime** (validation matrix, RECORDCI off, CREATECATALOG; 5 jobs in parallel, one variant at a time on a quiet
+    machine, 13:41–13:56; `RAINYDAY_TIMERS`).
+    - "Frequency analysis" is:
+      - Monte Carlo: `resampling: total` + `frequency: write`, i.e. storm reads, draws, transposition of 7 durations
+        and ranking;
+      - exact: `resampling: total` + `exact: estimators + write`, i.e. storm reads, per-storm pool and estimators.
+    - Storm reads (light-catalog rebuild, 9–13 s) are in both.
+
+    | Shape | Total, montecarlo | Total, exact | Total, both | FA part, montecarlo | FA part, exact |
+    |---|---|---|---|---|---|
+    | Talequah | 9.8 s | 8.7 s | 12.2 s | – | – |
+    | Texas HUC 120401020101 | 139 s | 133 s | 155 s | 30 s | 24 s |
+    | Iowa pixel | 197 s | 197 s | 216 s | 34 s | 34 s |
+    | Iowa 16,000 km² circle | 233 s | 206 s | 263 s | 66 s | 41 s |
+    | Iowa R10 ellipse, rotated 45° | 320 s | 220 s | 352 s | 143 s | 44 s |
+
+    - The catalog scan dominates the totals.
+    - With the table engine, the Monte Carlo cost grows with the number of draws (NYEARS × NREALIZATIONS) and the box
+      size; the exact cost does not depend on NYEARS or NREALIZATIONS.
+    - `both` adds the pool and estimators to the Monte Carlo run (+20–32 s here, including the
+      `RAINYDAY_DUMP_EXACTPOOL` dump).
+    - Peak memory, exact vs montecarlo: −0.17 to +0.21 GB.
+    - Iowa HUC-8 07100006 (`CATALOGPATH`, RECORDCI B = 1000), exact + RECORDCI: 1.75 min. The Monte Carlo +
+      RECORDCI runs of `runs/val` took 2.50–2.62 min, at another time and not concurrent with other jobs.
+    - A frequency-analysis-only rerun of both engines from the `off2` catalogs (`fa_mc`, `fa_exact`, 13:56–14:05) is not
+      reported: it overlapped a system incident (load average 63–114).
+- **Limits.**
+  - Scope: the same as RECORDCI (uniform transposition, Poisson, PDS/AMS, watershed/box, one duration or
+    MULTIPLEDURATIONS); `"exact"` and `"both"` stop on other settings, including SCENARIOS.
+  - `"exact"` has no realizations: no SCENARIOS, no `_FreqAnalysis.csv`, no ensemble statistics other than the exact
+    ones (the median of the realizations is not available; `q50` is the median of one realization's T-yr value).
+  - Rows only exist for T ≤ NYEARS, and `mean` is the NYEARS-dependent realization mean. For large T, raise NYEARS
+    (cheap in exact mode) or use `level`.
+  - `mean` and `exp_*` use the 20,000-point trapezoid of `expected` (relative error about 1e-5); `level` and the
+    quantiles are exact pool values.
+  - Without `INCLUDEYEARS`, RainyDay's `nyears` counts storm end years; the exact engine uses it, as RainyDay does.
+  - Memory: the RECORDCI pool (durations × storms × locations × 4 bytes), once even when both options are on.
+
 ---
 
 ## C. Which changes alter results relative to the original RainyDay
@@ -278,6 +416,12 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
 - **Adds outputs only:** `RECORDCI` (B7) writes new files next to the frequency analysis; with it off or on, every
   existing output (catalogs, raw transposed depths, `_FreqAnalysis.csv`) is verified identical to RainyDay_fast
   without it (`compare_dumps ref off|on --catalogs`, ALL PASS).
+- **`FREQENGINE` (B8).**
+  - `"montecarlo"` (default) and `"both"` keep every Monte Carlo output bit-identical; `"both"` only adds
+    `_FreqExact.csv/.png`.
+  - `"exact"` replaces the Monte Carlo frequency analysis with its noise-free values, and by design skips the random
+    draws (no `np.random` call after the seed). Its catalogs are identical; it writes no realizations and no
+    `_FreqAnalysis.csv`.
 
 ## D. New settings reference
 
@@ -295,6 +439,8 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
 | `RECORDSEED` | JSON | seed of the record generator (`np.random.default_rng`) | 20261026 |
 | `RECORDBLOCK` | JSON | years per moving block (1 = independent years) | 1 |
 | `RECORDSAVE` | JSON | `"true"`: also `_RecordBootstrap.csv` and `_RecordDraws.csv`; `"false"`: `_RecordCI.csv` only | `"true"` |
+| `FREQENGINE` | JSON | `"montecarlo"`, `"exact"` (no realizations, no draws), `"both"` (B8) | `"montecarlo"` |
+| `RAINYDAY_DUMP_EXACTPOOL` | env | folder for the exact engine's pool of every duration (`<name>_exactpool.npz`, for `tools/verify_exact_engine.py`; B8) | off |
 | `RAINYDAY_CATALOG_ENGINE` | env | `batchfft`, `batchfft_mp`, `fft_perstep`, `batchtf`, `batchcuda` | auto (`batchfft`) |
 | `RAINYDAY_BLOCKFILES` | env | files per FFT batch | 16 / auto |
 | `RAINYDAY_DUMP_WHICHRAIN` | env | folder for the raw transposed depths | off |

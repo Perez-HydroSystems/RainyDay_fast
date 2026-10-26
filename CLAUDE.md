@@ -131,6 +131,43 @@ uncertainty", README_CHANGES B7).** Adds outputs only; every existing output sta
   - Validation runs: `$FAST_TEST_ROOT/runs/val/{Iowa,HUC}` (JSONs in `jsons/val`), compare_runs output in
     `$FAST_TEST_ROOT/compare/`.
 
+**`FREQENGINE`, exact frequency engine (branch `fast/exact`, GP 2026-10-26; README "Exact frequency engine",
+README_CHANGES B8).** Values: `"montecarlo"` (default), `"exact"`, `"both"`. `"both"` keeps every Monte Carlo output
+bit-identical; `"exact"` skips the draws by design (no `np.random` call after the seed) and writes no `_FreqAnalysis.csv`.
+- **Module map (`fast_record.py`):**
+  - `parse_engine`; `check_options`/`check_duration` take `who=` (same scope as RECORDCI);
+  - `StormPool`: the per-storm pool, moved out of `RecordCI` with unchanged arithmetic. One object per run: `RecordCI`
+    creates it, and `ExactFA(record=recordci)` shares it (`vals[j] = None` frees it for both);
+  - new `Pool` methods (`levels`/`expected` untouched): `_values_at` (m-th largest expanded value, the `levels`
+    search), `critical_counts` + `quantiles` (`gammaincinv`/`betaincinv`; Q = the pool value of rank floor(c*) + 1;
+    −9999 where P(fewer than k events) ≥ q), `cdf` (F and 1 − F, strict count > x), `expected_minmax` (survival Pᴺ and
+    1 − (1 − P)ᴺ in the `expected` trapezoid);
+  - `ExactFA`: `compute(j)`, a fresh `Pool` (one group, `m_needed` with RainyDay's `nyears`) with the same call order as
+    `RecordCI.estimates`, so `mean == sst_expected` bitwise when NY equals `nyears`. Then `write(j, folder, name)`
+    writes `_FreqExact.csv/.png`, and in exact mode with RECORDCI calls `RecordCI.write(sortrain=None, exact=...)`.
+    `write_all` covers every duration. `exact_png` uses RainyDay's plot style;
+  - `RecordCI.write(..., exact=None)`, the exact path. `_RecordBootstrapLevel.csv` is written when `write_level` is set
+    (set by `ExactFA`).
+- **Hooks in `RainyDay_Py3.py` (`GP 2026-10-26`; every replaced line is kept as a comment):**
+  - after the RECORDCI parse: `freqengine`/`freqexact` and the option checks; the duration check;
+  - draws: the `if freqexact:` branch ahead of the sampling `elif` chain, `whichstorms` one-line guards, the draw loop
+    `for i in (... if not freqexact else ())`, the `elif` for the `whichx/whichrain` allocations, and
+    `and not freqexact` on `whichrain_md`/`whichtimeind`;
+  - `ExactFA(...)` after `RecordCI(...)`; `stormsel`/`wsel` guards; in the storm loop, `add_storm` + `continue` in exact
+    mode right after reading `catrain`; `exactfa.add_storm` at the loop end (`both` without RECORDCI);
+  - guards on the −9999 marks and the whichrain dump; `and not freqexact` on the ranking (`calctype` line);
+  - `exactfa.write_all(...)` before the Monte Carlo writes; guards on `write_frequency_outputs`, the parent RECORDCI
+    write and the sub-duration loop.
+- **Tools:** `tools/verify_exact_engine.py <variant>` (a `both` run made with `RAINYDAY_DUMP_EXACTPOOL=<dir>`: exact vs
+  realizations, i.e. mean z, quantile binomial bands, min/max of N); `compare_runs.py --engine auto|montecarlo|exact
+  --stat mean|median|level`; `tools/test_record_ci.py` (44 tests).
+- **Status (2026-10-26):**
+  - `compare_dumps ref off2|both|on2|on_both --catalogs`: ALL PASS (80 each); 55/55 PNGs of `both` byte-identical;
+  - `exact`: catalogs bitwise equal to `ref`, `_FreqExact.csv` 35/35 byte-identical to `both`;
+  - `verify_exact_engine.py both`: mean |z| ≤ 2.64 (Iowa/Texas); quantiles 1603/1610 in the 99 % binomial band;
+    min/max 89–90 % in the central 90 %;
+  - runs in `$FAST_TEST_ROOT/runs/{off2,exact,both,on2,on_exact,on_both,hucexact}`, pools in `dumps/both_pool`.
+
 # CLAUDE.md — RainyDay GPU/acceleration testbed
 
 ## What this is
