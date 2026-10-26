@@ -103,6 +103,103 @@ Checks:
 - `tools/compare_catalogs.py <ref> <test> --rtol 0`;
 - `tools/compare_dumps.py` (see `CLAUDE.md`).
 
+### Record (sampling) uncertainty: `RECORDCI` (GP 2026-10-26)
+
+RainyDay's ensemble spread (the realizations) holds the storm catalog fixed. It shows the Monte Carlo variability of
+the synthetic records, not the uncertainty from having only a few years of rainfall. `RECORDCI` adds that record
+uncertainty to every frequency analysis of a run. It only **adds** files: every existing output (catalog, random draws,
+`_FreqAnalysis.csv`, PNG) stays bit-identical.
+
+```json
+"RECORDCI": "bootstrap",
+"RECORDNBOOT": 1000,
+"RECORDLEVEL": 90,
+"RECORDSEED": 20261026,
+"RECORDBLOCK": 1,
+"RECORDSAVE": "true",
+"INCLUDEYEARS": "2002-2023"
+```
+
+| Key | Values | Default |
+|---|---|---|
+| `RECORDCI` | `"false"`, `"bootstrap"` (year bootstrap), `"jackknife"` (leave one year out) | `"false"` |
+| `RECORDNBOOT` | number of bootstrap records B | 1000 |
+| `RECORDLEVEL` | level of the bands (%) | 90 |
+| `RECORDSEED` | seed of the record generator (`np.random.default_rng`, separate from RainyDay's `np.random`) | 20261026 |
+| `RECORDBLOCK` | years per block: 1 = independent years; 2–3 = moving blocks, a check of interannual dependence | 1 |
+| `RECORDSAVE` | `"true"`: also every bootstrap record and the drawn years; `"false"`: `_RecordCI.csv` only | `"true"` |
+
+Strings or JSON booleans are accepted (`"RECORDCI": true` means `"bootstrap"`).
+
+**What it computes.**
+- **Record years:** `INCLUDEYEARS` when given, otherwise every year from the first to the last storm start year. A
+  storm belongs to its **start** year. Set `INCLUDEYEARS` to the years of the rainfall record: without it, RainyDay's
+  own storm rate uses the number of distinct storm *end* years, and a warning is printed if the two differ.
+- **The noise-free estimate.** For every storm, RainyDay's basin average of every duration is computed at every
+  location RainyDay can draw (uniform transposition), from the storm rain RainyDay already reads. From these values,
+  the exact model RainyDay samples (Poisson storm counts, storms equally likely, locations uniform) gives
+  `sst_expected`: the value that the mean of RainyDay's realizations converges to, without Monte Carlo noise.
+- **The record CI.** B alternative records are drawn by resampling the record years with replacement. Each storm is
+  weighted by how often its year was drawn, and `sst_expected` is recomputed for each record. The spread of these
+  values is the record (sampling) uncertainty of the estimate.
+- Validated against 22 leave-one-year-out RainyDay runs of an Iowa pixel (median difference −0.17 %); the per-storm
+  values agree with RainyDay's own transposed depths to ~1e-6 (`tools/test_record_ci.py`).
+
+**Outputs**, next to each `_FreqAnalysis.csv` (one folder per duration with `MULTIPLEDURATIONS`):
+
+```
+<scen>_24/
+  <scen>_24_FreqAnalysis.csv       unchanged: prob.exceed, returnperiod, rlz1..rlzN (Monte Carlo realizations)
+  <scen>_24_FrequencyAnalysis.png  unchanged
+  <scen>_24_RecordBootstrap.csv    prob.exceed, returnperiod, sst_expected, rec1..recB (jackknife: drop<year>)
+  <scen>_24_RecordCI.csv           the bands below, after a '#' header that defines them
+<scen>_72/                         (the parent DURATION: the same files, plus StormCatalog/)
+  <scen>_RecordDraws.csv           once per run: how often each record year was drawn in each record
+                                   ('#' header: method, seed, block, B, years, storm-year rule)
+```
+
+`_RecordBootstrap.csv` has the same rows (return periods) as `_FreqAnalysis.csv` and is the record analogue of the
+realization columns: any percentile can be taken from it. `_RecordCI.csv` columns (read it with `comment='#'`):
+
+| Column | Meaning | Is it a CI? |
+|---|---|---|
+| `rd_mean` | RainyDay's estimate: the mean of the realizations | – |
+| `sst_expected` | noise-free value of `rd_mean` for this catalog | – |
+| `sst_level` | quantile estimator of the same model (Λ(x_T) = 1/T for PDS, −ln(1 − 1/T) for AMS) | – |
+| `ens_lo`, `ens_hi` | the ensemble spread as in `_FreqAnalysis.csv` (min–max, or the `UNCERTAINTY` quantile range) | **no** |
+| `rec_lo`, `rec_hi`, `rec_se` | **record CI** of the estimate: percentiles (and sd) of the bootstrap values of `sst_expected` | yes |
+| `est_lo`, `est_hi` | **total CI of the RainyDay estimate**: `rd_mean` + record deviation + Monte Carlo error of `rd_mean` (SE = sd(realizations)/√NREALIZATIONS), as independent errors | yes |
+| `pred_lo`, `pred_hi` | predictive band: realizations + record deviations | **no**: it does not shrink with more realizations and depends on NYEARS |
+
+With `"jackknife"`, `rec_se` is the jackknife standard error and the bands use the normal approximation.
+The log prints, per duration, `|rd_mean − sst_expected|` in Monte Carlo standard errors, with a warning above 4.
+
+**Comparing two runs (IDF_A vs IDF_B):**
+
+```bash
+python tools/compare_runs.py MAINPATH/<SCEN_A> MAINPATH/<SCEN_B> --stat median --margin 5 --level 90 [--bh]
+```
+
+- Δ = 100 (B − A)/A of the realization median (or mean), per duration and return period.
+- Its CI combines the Monte Carlo error (unpaired bootstrap of the realizations of each run) with the record error
+  (the paired bootstrap records of the two runs: the same drawn years, so the shared years largely cancel in Δ).
+- Both runs must have identical `_RecordDraws.csv` (same record years, method, seed, B and block); otherwise it stops.
+- Classes: *equivalent* if the 90 % CI is inside ±margin; *increase*/*decrease* if the 95 % CI is beyond ±margin
+  (or, with `--bh`, if the Benjamini-Hochberg q ≤ 0.05); *inconclusive* otherwise. TOST and minimum-effect p-values are
+  reported. `--family PAIRS.txt` compares many pairs and applies BH over all of them.
+
+**Scope.** Uniform transposition (irregular or rectangular domain), `RESAMPLING` poisson, `CALCTYPE` pds or ams,
+`POINTAREA` watershed or box, one duration (with or without `DURATIONCORRECTION`) or `MULTIPLEDURATIONS`. Other
+settings stop the run at the start with a message: nonuniform transposition, empirical resampling, `ENHANCEDSST`,
+`ROTATIONANGLE`, `INTENSDISTR`, `SCENARIOS`, `SEASONALSAMPLING`, point areas, and a catalog longer than `DURATION`
+without duration correction.
+
+**Limits.**
+- The catalog is reweighted, not rebuilt, for each record. Leave-one-year-out runs bound this effect at ≤ 0.28 %.
+- Years are independent unless `RECORDBLOCK` > 1.
+- The bootstrap cannot create storms larger than those observed, so the CIs at 500–1000 yr are lower bounds.
+- Memory: durations × storms × locations × 4 bytes (Iowa pixel, 7 durations, 400 storms, 35,416 locations: 0.4 GB).
+
 ## RainyDay_mod
 
 > **About this fork.** This is a modified clone of the original RainyDay repository

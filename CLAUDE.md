@@ -99,6 +99,38 @@ for a new domain or dataset"):
   summation data flow as the object-mode specialization, no FMA); `tools/bench_fast_sst.py <StormCatalog>` (per-storm
   timings table vs fast).
 
+**`RECORDCI`, record (sampling) uncertainty (branch `fast/record`, GP 2026-10-26; README "Record (sampling)
+uncertainty", README_CHANGES B7).** Adds outputs only; every existing output stays bit-identical.
+- **Module map:**
+  - `Source/RainyDay_utilities_Py3/fast_record.py`:
+    - `parse_options` (RECORD* keys, strings or JSON booleans), `check_options`, `check_duration`;
+    - `storm_years` (start year), `record_years`, `year_draws` (`default_rng(RECORDSEED)`, moving blocks),
+      `draw_counts`, `jackknife_counts`;
+    - per storm: `storm_values` = `basin_windows` (float64 FFT correlation with `trimmask`, one cumsum, max over the
+      windows; the prototype's `basin_series`/`dmax`) + `zero_anchors` (RainyDay's < 0.5 zero rule, exact) +
+      `dry_support` (no rain on the weighted cells -> exactly 0);
+    - `Pool` (port of `record_boot.Pool`: top-M values with their record-year group; `levels`, `expected`
+      (`gammainc` PDS / `betainc` AMS, trapezoid on the prototype's 20000-point grid)), `m_needed`, `cum_counts`;
+    - `RecordCI`: run object (`add_storm`, `write`, `write_draws`).
+  - Hooks in `RainyDay_Py3.py` (`GP 2026-10-26`, insertions only): import; parse + option checks before the
+    catalog (stop early); `check_duration` after the MULTIPLEDURATIONS checks; `RecordCI(...)` before the resampling
+    loop (anchors `xmask/ymask` or the whole grid); `add_storm(i, catrain)` at the end of each storm (a NaN -> 0 copy);
+    `write(...)` after the parent and every sub-duration `write_frequency_outputs`; `report()`.
+  - `tools/test_record_ci.py` (unit tests), `tools/compare_runs.py` (IDF_A vs IDF_B with Monte Carlo + record CI),
+    `tools/compare_dumps.py --catalogs` (now also compares light catalogs bitwise).
+- **Invariants:** no `np.random` call (own `default_rng`); RainyDay's arrays are only read (`catrain` copied);
+  writes happen before the SCENARIOS block (SCENARIOS is not supported anyway).
+- **Prototype parity:** on the Iowa pixel catalog, `levels` and `expected` (point, 1000 bootstrap draws, 7 durations)
+  equal the prototype cache `24_record_uncertainty/cache/pixel_Iowa.npz` bitwise. Keep `P` C-contiguous before
+  `trapezoid` (a gathered `P[:, inv]` is F-ordered and changes numpy's summation order: 1e-14 differences).
+- **Status (2026-10-26):**
+  - `compare_dumps ref off --catalogs` and `ref on --catalogs`: ALL PASS (80 checks each; `ref` = main b63865a in
+    the worktree `$FAST_TEST_ROOT/src_ref`); 55/55 PNGs byte-identical; `tools/test_record_ci.py`: 28 PASS.
+  - The pixel CI and jackknife values equal the prototype's CSVs to every printed decimal.
+  - Added time with the option on, B = 200 (matrix, 5 jobs in parallel): +9 to +48 s per shape, +0.2–0.34 GB peak.
+  - Validation runs: `$FAST_TEST_ROOT/runs/val/{Iowa,HUC}` (JSONs in `jsons/val`), compare_runs output in
+    `$FAST_TEST_ROOT/compare/`.
+
 # CLAUDE.md — RainyDay GPU/acceleration testbed
 
 ## What this is

@@ -172,6 +172,94 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
   parts. It does not change results.
 - **`compare_light_catalog.py`, `test_light_rebuild.py`.** Checks for the light catalog.
 - **`verify_fast_sst.py`, `bench_fast_sst.py`.** Checks and benchmarks for the table engine.
+- **`compare_dumps.py --catalogs`** (GP 2026-10-26). Light catalogs are now compared too: every variable bitwise and
+  every global attribute except `history` and `description`. Before, `--catalogs` skipped them silently. A run pair
+  without comparable catalogs is now a FAIL.
+- **`test_record_ci.py`, `compare_runs.py`** (GP 2026-10-26). Unit tests of `RECORDCI`, and IDF_A vs IDF_B with the
+  combined Monte Carlo + record CI (B7).
+
+### B7. Record (sampling) uncertainty, `RECORDCI` (GP 2026-10-26). Status: done and verified (branch `fast/record`).
+- **What.** An optional JSON setting, off by default, that adds the record (sampling) uncertainty of every frequency
+  analysis of a run: the uncertainty from having only NY years of rainfall, which RainyDay's ensemble spread does not
+  contain (the spread holds the storm catalog fixed). Per duration it writes `<name>_RecordBootstrap.csv` (every
+  bootstrap record, like `"all_realizations"`) and `<name>_RecordCI.csv` (record CI, total CI of the estimate,
+  predictive band, and the unchanged ensemble spread side by side, with a `#` header that defines each band); once per
+  run `<scenario>_RecordDraws.csv` (the drawn years). Keys: `RECORDCI`, `RECORDNBOOT`, `RECORDLEVEL`, `RECORDSEED`,
+  `RECORDBLOCK`, `RECORDSAVE` (section D). New tool `tools/compare_runs.py`: IDF_A vs IDF_B with the combined Monte
+  Carlo + record CI of their difference, the paper's three-way classes and TOST / minimum-effect p-values.
+- **How.** Port of the validated prototype of the paper project (`24_record_uncertainty/scripts/record_boot.py`,
+  `22_huc_ellipse_diagnostic/scripts/04_correlation_emulator.py`) into `Source/RainyDay_utilities_Py3/fast_record.py`:
+  1. Inside RainyDay's resampling loop, from the storm rain RainyDay has already read (a copy), the basin-average
+     maximum of every duration at every location RainyDay can draw: float64 FFT correlation with RainyDay's `trimmask`,
+     one cumulative sum per storm, `timeres/60/mnorm`, RainyDay's zero rule. No extra I/O.
+  2. The exact SST model RainyDay samples (Poisson counts at λ = storms/NY, storms equally likely, locations uniform)
+     gives, per FreqAnalysis row (k-th largest of NYEARS years), the noise-free value of the realization mean
+     E[X_(k)] (PDS: `gammainc`; AMS: `betainc`) and a quantile estimator.
+  3. Year bootstrap with its own generator `np.random.default_rng(RECORDSEED)` (the prototype's draws for block 1;
+     moving blocks for `RECORDBLOCK` > 1) or leave-one-year-out jackknife; a storm's weight is the count of its start
+     year. Record years = `INCLUDEYEARS`, else the span of the storm start years.
+  4. Hooks in `RainyDay_Py3.py`, all insertions marked `GP 2026-10-26` (no existing line changed): import; parse and
+     option checks before the catalog (unsupported runs stop at the start); the duration check next to the
+     MULTIPLEDURATIONS checks; the run object before the resampling loop; one call per storm; one write after each
+     `write_frequency_outputs` (parent and every sub-duration), before the SCENARIOS block.
+- **Why.** The paper's comparisons need the record uncertainty of depths and of differences between configurations,
+  computed in the same run as RainyDay's estimate, for any basin or shape.
+- **Effect on results.** None: outputs are only added. No `np.random` call was added, removed or moved; RainyDay's
+  arrays are only read.
+- **Verified** (2026-10-26, Mac M3 Max, RainyDay_Env; outputs in `/Users/gjperezm/Databases/RainyDay_fast_tests`):
+  - **Bit-identity.** The validation matrix (5 shapes, production settings) was run with main `b63865a` (`ref`), and
+    with this branch with the option off (`off`) and on (`on`: bootstrap, B = 200). `compare_dumps ref off
+    --catalogs` and `compare_dumps ref on --catalogs`: ALL PASS, 80 checks each (35 raw-depth dumps bitwise, 35
+    FreqAnalysis CSVs byte-identical, 5 light catalogs bitwise with the new light-catalog check). All 55 PNGs are
+    byte-identical too.
+  - **Unit tests** (`tools/test_record_ci.py`, 28 PASS):
+    - the pool equals RainyDay's `SSTalt_multidur` at every anchor of synthetic storms (timeres 60 and 30, fractional
+      and 1×1 masks, parent and sub-durations, duration correction): the same zero values, other depths within
+      3.3e-7;
+    - `levels` equals `np.partition` of the expanded values bitwise (PDS and AMS, with pool extension);
+    - `expected` matches a direct simulation of the PDS and AMS processes (|z| ≤ 2.2);
+    - `Pool` equals a verbatim copy of the prototype's `Pool` bitwise;
+    - block 1 reproduces `default_rng(seed).integers(0, NY, (B, NY))`.
+  - **Prototype, Iowa pixel** (catalog `C72_N400_all`, B = 1000, seed 20261026; `CATALOGPATH` run whose
+    FreqAnalysis CSVs equal the original run's byte for byte):
+    - `sst_expected`, `rec_lo` and `rec_hi` equal `24_record_uncertainty/csv/pixel_record_ci.csv` to every printed
+      decimal (70 cells);
+    - every bootstrap value equals the prototype's full-precision cache within the 4-decimal rounding (≤ 5e-5 mm);
+      offline, on the same pool values, all four estimators are bitwise equal to the cache;
+    - jackknife: the 22 drop-year values equal `jackknife_validation.csv` to every printed decimal (7 durations ×
+      10 return periods).
+  - **Noise-free check.** |`rd_mean` − `sst_expected`| in Monte Carlo SE: PDS, 70 cells, median 0.60, max 1.74;
+    AMS max 1.75; matrix shapes max 2.1.
+  - **`compare_runs.py`**, Iowa HUC-8 07100006 raw vs rg (each run on its own catalog, T = 100, median, margin 5) vs
+    `classes_mc_vs_combined.csv`: the Monte Carlo part is identical (Δ and all its CIs); the classes are identical
+    (6 equivalent, 1 h inconclusive). The record part differs as expected, because the prototype evaluated the rg mask
+    on the raw basin's catalog with the quantile estimator: the record half-width is 1.0–3.5 pp here vs 0.9–2.3 pp,
+    the largest change at 1 h, where the rg run's own catalog moves the noise-free Δ from −1.6 % (shape only) to
+    −3.0 %, closer to RainyDay's −3.8 %.
+  - **Runtime and memory.** Matrix with B = 200 (5 jobs in parallel):
+
+    | Shape | Off | On | Added | Per-storm pool | Estimators + files | Peak memory off → on |
+    |---|---|---|---|---|---|---|
+    | Talequah | 10 s | 19 s | +9 s | 0.6 s | 7.6 s | 1.64 → 1.64 GB |
+    | Texas HUC 120401020101 | 146 s | 172 s | +26 s | 12.8 s | 11.1 s | 1.51 → 1.72 GB |
+    | Iowa pixel | 202 s | 232 s | +30 s | 12.9 s | 9.8 s | 2.24 → 2.53 GB |
+    | Iowa 16,000 km² circle | 235 s | 279 s | +44 s | 23.6 s | 13.7 s | 2.15 → 2.49 GB |
+    | Iowa R10 ellipse, rotated 45° | 317 s | 365 s | +48 s | 28.0 s | 11.3 s | 2.16 → 2.34 GB |
+
+    With B = 1000: Iowa pixel PDS 12.7 + 31.2 s, AMS 12.7 + 48.4 s, jackknife 12.7 + 5.6 s; Iowa HUC-8 25 + 57 s.
+- **Limits.**
+  - Scope: uniform transposition (irregular or rectangular domain), Poisson resampling, PDS or AMS, watershed or box,
+    one duration (with or without duration correction) or MULTIPLEDURATIONS. Everything else stops with a message
+    (nonuniform, empirical, ENHANCEDSST, ROTATIONANGLE, INTENSDISTR, SCENARIOS, SEASONALSAMPLING, point/pointlist, a
+    catalog longer than DURATION without duration correction).
+  - The catalog is reweighted, not rebuilt, per record (bounded at ≤ 0.28 % by the leave-one-year-out runs); years are
+    independent unless `RECORDBLOCK` > 1; the CIs at 500–1000 yr are lower bounds (no storm larger than observed).
+  - Storm year = start year. Without `INCLUDEYEARS`, RainyDay's own storm rate uses the number of distinct storm
+    **end** years (RainyDay_Py3.py, `nyears`), while RECORDCI uses the span of the start years; a warning is printed
+    when the two counts differ (then `sst_expected` is not the noise-free value of `rd_mean`). Set `INCLUDEYEARS`.
+  - `expected` uses the prototype's trapezoid on a 20000-point geometric grid: quadrature error ~1e-5 relative
+    (unit test against the exact step-function integral), far below the Monte Carlo error.
+  - Memory: durations × storms × locations × 4 bytes (Iowa pixel, 7 × 400 × 35,416: 378 MB).
 
 ---
 
@@ -185,6 +273,9 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
   - all catalog engines (A5);
   - `MULTIPLEDURATIONS` (A11);
   - everything in section B, which is bit-identical to RainyDay_mod.
+- **Adds outputs only:** `RECORDCI` (B7) writes new files next to the frequency analysis; with it off or on, every
+  existing output (catalogs, raw transposed depths, `_FreqAnalysis.csv`) is verified identical to RainyDay_fast
+  without it (`compare_dumps ref off|on --catalogs`, ALL PASS).
 
 ## D. New settings reference
 
@@ -196,6 +287,12 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
 | `MULTIDURATIONENGINE` | JSON | `"fast"`, `"exact"`, `"table"` (B3) | `"fast"` |
 | `CATALOGSTORAGE` | JSON | `"full"`, `"light"` (B2) | `"full"` |
 | `COMPUTE` | JSON block | engine, nworkers, blockfiles, GPU settings | `"auto"` |
+| `RECORDCI` | JSON | `"false"`, `"bootstrap"`, `"jackknife"` (B7; JSON booleans accepted) | `"false"` |
+| `RECORDNBOOT` | JSON | number of bootstrap records | 1000 |
+| `RECORDLEVEL` | JSON | level of the bands (%) | 90 |
+| `RECORDSEED` | JSON | seed of the record generator (`np.random.default_rng`) | 20261026 |
+| `RECORDBLOCK` | JSON | years per moving block (1 = independent years) | 1 |
+| `RECORDSAVE` | JSON | `"true"`: also `_RecordBootstrap.csv` and `_RecordDraws.csv`; `"false"`: `_RecordCI.csv` only | `"true"` |
 | `RAINYDAY_CATALOG_ENGINE` | env | `batchfft`, `batchfft_mp`, `fft_perstep`, `batchtf`, `batchcuda` | auto (`batchfft`) |
 | `RAINYDAY_BLOCKFILES` | env | files per FFT batch | 16 / auto |
 | `RAINYDAY_DUMP_WHICHRAIN` | env | folder for the raw transposed depths | off |
