@@ -616,6 +616,103 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
 key matching that still surrounds the `UNCERTAINTY` and `RETURNLEVELS` hooks, and the duration-rewrite path (B9.1,
 Limits).
 
+### B10. Per-record median bootstrap, `_RecordBootstrapMedian.csv` (GP 2026-10-27). Status: done and verified (branch `fast/median`).
+- **Commits:** `4fe10a0` (module, `compare_runs.py`, unit tests), then the docs commit (this entry, README, CLAUDE.md,
+  User's Guide).
+- **What.**
+  - With RECORDCI and RECORDSAVE "true", every duration also gets `<name>_RecordBootstrapMedian.csv`:
+    `prob.exceed, returnperiod, sst_median, rec1, ..., recB` (jackknife: `drop<year>`, the names of
+    `_RecordBootstrap.csv`), with the formats of `_RecordBootstrap.csv` (`%.6f`, `%.4f`).
+  - `sst_median` is the exact median *q50* of X_(k), the T-yr value of one realization: it equals `q50` of
+    `_FreqExact.csv` bitwise when RECORDCI's record years equal RainyDay's `nyears` (INCLUDEYEARS set). `rec<b>` is the
+    same quantile under record b's year weights.
+  - Written in every RECORDCI mode (Monte Carlo, FREQENGINE "exact" or "both"). No new key. `_RecordCI.csv` and every
+    other file are unchanged.
+  - `tools/compare_runs.py --stat median`:
+    - the Monte Carlo part is unchanged (the median of the realizations, unpaired bootstrap);
+    - the record part comes from `_RecordBootstrapMedian.csv` (`sst_median` and the `rec*` columns, paired by draw);
+    - an exact run (no realizations, or `--engine exact`) uses `q50` of `_FreqExact.csv` with a zero-width Monte Carlo
+      part, instead of stopping; mixed pairs work as for the mean;
+    - runs made before the file existed fall back to the mean's record bootstrap (`_RecordBootstrap.csv`, the old
+      behaviour) with a one-line WARNING;
+    - new last column `rec_source`: `median`, `mean-fallback`, `mean` or `level`. The existing columns keep their
+      positions.
+- **Why.** The paper compares two runs by the median of the 100 realizations, an estimate of *q50*. Its record part
+  borrowed the mean's bootstrap, an approximation. Now each statistic has its own records.
+- **How** (`Source/RainyDay_utilities_Py3/fast_record.py`, marked `GP 2026-10-27`, old lines kept as comments):
+  - `RecordCI.estimates(j, ks, median=True)`: `md_pt` = `Pool.quantiles(ones, ks, [0.5], NY, nsim, calctype)` and
+    `md_bt` = the same for every weight row `C` (bootstrap or jackknife) with `ny_draw`. They are computed after
+    `lv_*` and `ex_*`, so a pool extension cannot change `expected` (its grid starts at the pool floor). The m-th
+    largest pool value depends neither on the record-year groups nor on the pool depth, so `md_pt` equals ExactFA's
+    `q50` bitwise; the −9999 rule is the same (m > the number of expanded values).
+  - `RecordCI.write` computes them only when RECORDSAVE is true and writes the file next to `_RecordBootstrap.csv`.
+    The per-duration RECORDCI log line ends with `(median q50 X s)`.
+- **Effect on results.** None: one file is added. No `np.random` call was added, removed or moved.
+- **Verified** (2026-10-26, Mac M3 Max, RainyDay_Env; runs from the `fast/median` working tree with the source of
+  `4fe10a0`; outputs under `$FAST_TEST_ROOT`):
+  - **Unit tests:**
+
+    | Suite | Result |
+    |---|---|
+    | `tools/test_record_ci.py` | 51 PASS (44 existing + 7 new) |
+    | `tools/test_parsing.py` | ALL PASS (72 checks) |
+    | `tools/test_rect_catalog.py` | ALL PASS (19 checks) |
+    | `tools/test_windowed_block.py` | ALL PASS |
+
+    The new tests check:
+    - the weighted median (`Pool.quantiles` at 0.5, batched over weight rows as RecordCI calls it) against
+      `simulate()` for PDS and AMS, with bootstrap-like weights (zeros, counts > 1), a jackknife row (n − 1 years) and
+      a sparse row (−9999 medians), on a gamma pool with zeros and ties and on a pool of synthetic storms: the quantile
+      definition exactly on the pool and within the binomial error of the simulation; batched rows equal one row at a
+      time bitwise;
+    - `md_pt` == ExactFA `q50` bitwise (shared pool and ExactFA's own pool, PDS and AMS, bootstrap and jackknife);
+      `md_bt` == `Pool.quantiles` per weight row on a fresh pool; `lv_*`/`ex_*` bitwise unchanged by the median;
+    - the file: the header (`rec1..recB`; jackknife `drop<year>`), the rows of `_RecordBootstrap.csv`, `sst_median`
+      printed equal to `q50`, the exact path equal to the Monte Carlo path, no file with RECORDSAVE false;
+    - `compare_runs.py --stat median` on synthetic run folders written with the real writers: Monte Carlo + record
+      from the new file, the exact `q50` path (and `--engine exact` on "both" runs), the fallback warning and
+      `rec_source`, a mixed pair, and the column order.
+  - **Validation matrix,** variant `md_on_both` (the JSONs of `fx_on_both`, RECORDCI B = 200 + FREQENGINE "both", with
+    only MAINPATH changed):
+    - `compare_dumps ref md_on_both --catalogs`: ALL PASS (80 checks);
+    - byte-identical to `fx_on_both`: `_RecordCI.csv` 35/35, `_RecordBootstrap.csv` 35/35,
+      `_RecordBootstrapLevel.csv` 35/35, `_FreqExact.csv` 35/35, `_RecordDraws.csv` 5/5, `_FreqAnalysis.csv` 35/35, and
+      all 70 PNGs; the light catalogs (not byte-identical files) pass `compare_dumps fx_on_both md_on_both
+      --catalogs` (ALL PASS: every variable bitwise, attributes equal except history and description); the only new
+      files are the 35 `_RecordBootstrapMedian.csv`;
+    - `sst_median` printed equal to `q50` of `_FreqExact.csv` in 35/35 files; positive and increasing with T in every
+      file, and increasing with T in every record; the 5–95 % width of the `rec*` values relative to the point is
+      0.91–1.31 times the mean's (median 1.00; Talequah has one record year, so zero width).
+  - **B = 1000 runs** (`md_tutorial`: the User's Guide case-study JSONs, `CATALOGPATH`, RECORDCI + FREQENGINE "both";
+    `md_val`: the jackknife and AMS Iowa pixel): every one of the 150 existing files of `md_tutorial` is byte-identical
+    to `tutorial_final` (PNGs included), and every CSV of `md_val` to `val`; the jackknife file has the
+    columns `drop2002` … `drop2023`.
+  - **Added time:** 0.21 s per duration on the Iowa pixel at B = 1000 (1.5 s per 7-duration run; 0.03 s per duration
+    at B = 200), the same on the Iowa HUC-8 (1.4 s per run).
+  - **`compare_runs.py --stat median`, new record part vs the borrowed mean's** (the Monte Carlo part is identical;
+    `--margin 5`, `--level 90`):
+
+    | Pair | Rows | Record 90 % half-width, new vs old: median (range) | Width ratio new / old, record CI: median (min–max) | Width ratio, combined CI | Classes |
+    |---|---|---|---|---|---|
+    | Iowa HUC-8 07100006 raw vs rg, Monte Carlo median, B = 1000 | 105 | 1.35 (0.45–6.78) vs 1.26 (0.45–6.75) pp | 1.02 (0.81–1.49) | 1.02 (0.91–1.23) | unchanged: 86 equivalent, 19 inconclusive |
+    | the same, exact `q50` | 105 | as above | as above | 1.03 (0.86–1.50) | 2 of 105 change: 3 h 500 yr equivalent → inconclusive, 48 h 1000 yr inconclusive → equivalent |
+    | Iowa circle vs R10 ellipse (matrix), Monte Carlo median, B = 200 | 70 | 4.45 (1.83–9.74) vs 4.30 (1.82–9.30) pp | 1.01 (0.97–1.16) | 1.01 (0.98–1.14) | unchanged: 65 decrease, 5 inconclusive |
+
+    The combined CI ends move by at most 1.2 pp (HUC, Monte Carlo median), 1.7 pp (HUC, exact `q50`) and 1.7 pp
+    (matrix). On runs without the new file (`tutorial_final/case2`, `hucexact`, `fx_on_both`) the tool warns and the
+    output equals the old tool's (`8b0615e`, unchanged since `7ab20cf`) byte for byte apart from the added last column
+    `rec_source` (checked on `tutorial_final/case2` against the User's Guide table `compare_median_montecarlo.csv`, and on
+    the matrix pair). The record point Δ moves by up to 1.3 pp (HUC) and 1.7 pp (matrix): the median's Δ differs from
+    the mean's. Outputs: `$FAST_TEST_ROOT/compare/md_median/`.
+- **Limits.**
+  - `sst_median` equals `q50` only when RECORDCI's record years equal RainyDay's `nyears` (set INCLUDEYEARS), as for
+    `sst_expected` and `mean`.
+  - The record part is the record variability of the exact median *q50*; the Monte Carlo part carries the noise of the
+    sample median of the realizations. The two are combined as independent errors, as for the mean.
+  - The medians are pool values (exact, ties included); in a coarse pool, neighbouring return periods or records can
+    share a value.
+  - The 500–1000-yr CIs stay lower bounds (no storm larger than observed), as in B7.
+
 ---
 
 ## C. Which changes alter results relative to the original RainyDay
@@ -641,7 +738,10 @@ Limits).
   - everything in section B, which is bit-identical to RainyDay_mod.
 - **Adds outputs only:** `RECORDCI` (B7) writes new files next to the frequency analysis; with it off or on, every
   existing output (catalogs, raw transposed depths, `_FreqAnalysis.csv`) is verified identical to RainyDay_fast
-  without it (`compare_dumps ref off|on --catalogs`, ALL PASS).
+  without it (`compare_dumps ref off|on --catalogs`, ALL PASS). B10 adds `_RecordBootstrapMedian.csv` (RECORDCI with RECORDSAVE
+  "true"); every other output, the RECORDCI and FREQENGINE files included, is byte-identical (`md_on_both` vs
+  `fx_on_both`). `compare_runs.py --stat median` now takes the median's own record part (the old tables used the
+  mean's).
 - **`FREQENGINE` (B8).**
   - `"montecarlo"` (default) and `"both"` keep every Monte Carlo output bit-identical; `"both"` only adds
     `_FreqExact.csv/.png`.
@@ -684,7 +784,7 @@ Rows marked † were added in the docs review (2026-10-26).
 | `RECORDLEVEL` | JSON | level of the bands (%) | 90 |
 | `RECORDSEED` | JSON | seed of the record generator (`np.random.default_rng`) | 20261026 |
 | `RECORDBLOCK` | JSON | years per moving block (1 = independent years) | 1 |
-| `RECORDSAVE` | JSON | `"true"`: also `_RecordBootstrap.csv` and `_RecordDraws.csv`; `"false"`: `_RecordCI.csv` only | `"true"` |
+| `RECORDSAVE` | JSON | `"true"`: also `_RecordBootstrap.csv`, `_RecordBootstrapMedian.csv` (B10), `_RecordDraws.csv` (and `_RecordBootstrapLevel.csv` with FREQENGINE on); `"false"`: `_RecordCI.csv` only | `"true"` |
 | `FREQENGINE` | JSON | `"montecarlo"`, `"exact"` (no realizations, no draws), `"both"` (B8) | `"montecarlo"` |
 | `RAINYDAY_DUMP_EXACTPOOL` | env | folder for the exact engine's pool of every duration (`<name>_exactpool.npz`, for `tools/verify_exact_engine.py`; B8) | off |
 | `RAINYDAY_CATALOG_ENGINE` | env | `batchfft`, `batchfft_mp`, `fft_perstep`, `batchtf`, `batchcuda` | auto: `batchfft_mp` with `fork` and ≥ 4 cores, else `batchcuda` with CuPy and a CUDA device, else `batchfft` † (it read "auto (`batchfft`)") |

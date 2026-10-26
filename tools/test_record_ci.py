@@ -27,7 +27,24 @@ GP 2026-10-26: FREQENGINE (exact engine, fast_record.ExactFA and the new Pool me
     'all', NYEARS 100 and 1000)
 10. ExactFA mean / level == RecordCI sst_expected / sst_level bitwise (one group vs the record years, shared pool)
 11. FREQENGINE parsing and the check_options message
+GP 2026-10-27: the per-record median (RecordCI md_pt / md_bt, _RecordBootstrapMedian.csv, compare_runs.py --stat median):
+12. the weighted median (Pool.quantiles at 0.5, batched over weight rows as RecordCI calls it) vs simulate(), PDS and
+    AMS, bootstrap-like weights (zeros, counts > 1), a jackknife row (nyears NY - 1) and a sparse row (-9999 median),
+    on a gamma pool with zeros and ties and on a pool of synthetic storms: the quantile definition exactly on the pool
+    and within the binomial error of the simulation; batched rows == one row at a time, bitwise
+13. RecordCI: md_pt == ExactFA q50 bitwise (shared pool and ExactFA's own pool; PDS and AMS); md_bt == Pool.quantiles
+    of every weight row of a fresh pool (bootstrap and jackknife, ny_draw); estimates(median=True) leaves lv / ex
+    bitwise unchanged; _RecordBootstrapMedian.csv: header (rec1..recB; jackknife drop<year>), sst_median printed ==
+    _FreqExact.csv q50, written in the Monte Carlo and the exact path, not written with RECORDSAVE false
+14. compare_runs.py --stat median on small synthetic runs (real RecordCI / ExactFA writers, realizations from
+    simulate()): Monte Carlo + record from the new file, the exact q50 path (zero-width Monte Carlo part), the fallback
+    warning and rec_source for an older run (no median file), a mixed pair; the column order (rec_source last)
 """
+import argparse
+import contextlib
+import io
+import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -591,6 +608,268 @@ def test_engine_options():
     report(ok, "FREQENGINE parsing (montecarlo default, case, invalid values stop) and the check_options message")
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# GP 2026-10-27: the per-record median (md_pt / md_bt, _RecordBootstrapMedian.csv, compare_runs.py --stat median)
+# ---------------------------------------------------------------------------------------------------------------------
+def test_median_vs_simulation():
+    """The weighted median q50 of X_(k) with bootstrap-like weights vs RainyDay's resampling simulated directly."""
+    rng = np.random.default_rng(2028)
+    R = 30000
+    pools = []
+    v = rng.gamma(0.8, 10., (12, 40)).astype(np.float32)
+    v[rng.random(v.shape) < 0.15] = 0.                       # zeros
+    v[2, :10] = v[5, :10]                                     # ties across storms
+    v[7, 20:30] = v[7, 0]                                     # ties within a storm
+    pools.append(("gamma pool, zeros and ties", v, np.arange(12) // 2, 6, 40, np.array([40, 20, 10, 4, 1])))
+    pools.append(("storms timeres 60", storm_pool(60, 12, rng), np.arange(12) // 2, 6, 40, np.array([40, 20, 10, 4, 1])))
+    for label, vals, groups, NY, nsim, ks in pools:
+        boot = np.vstack([np.ones(NY, np.int64), FR.draw_counts(FR.year_draws(2, NY, 77), NY),
+                          np.array([3, 0, 0, 2, 0, 1])])                   # zeros, counts > 1 (sum NY)
+        jack = FR.jackknife_counts(NY)[[0, 3]]
+        sparse = np.r_[1, np.zeros(NY - 1, np.int64)][None]                # P(fewer than k events) >= 0.5: -9999
+        for calctype in ("pds", "ams"):
+            pool = FR.Pool(vals, groups, NY, FR.m_needed(vals.shape[1], ks, NY, nsim, calctype))
+            defin, simq, worst, nmiss, batch_ok = 0, 0, 0., 0, True
+            for W, nyears in ((boot, NY), (jack, NY - 1), (sparse, NY)):
+                Q = pool.quantiles(W, ks, [0.5], nyears, nsim, calctype)[:, :, 0]          # (rows, nk), batched
+                for b, w in enumerate(W):
+                    one = FR.Pool(vals, groups, NY, FR.m_needed(vals.shape[1], ks, NY, nsim, calctype))
+                    batch_ok &= np.array_equal(one.quantiles(w[None], ks, [0.5], nyears, nsim, calctype)[0, :, 0], Q[b])
+                    sim = simulate(vals, groups, w, nyears, nsim, ks, calctype, R, rng)
+                    se = np.sqrt(0.25 / R)
+                    for a in range(len(ks)):
+                        x = Q[b, a]
+                        nmiss += x == FR.MISSING
+                        Fq = pool.cdf(w, ks[a:a + 1], [x], nyears, nsim, calctype)[0][0, 0]
+                        xm = np.nextafter(np.float32(x), np.float32(-np.inf)) if x > 0 else -1e30
+                        Fm = pool.cdf(w, ks[a:a + 1], [xm], nyears, nsim, calctype)[0][0, 0] if x != FR.MISSING else 0.
+                        defin += not (Fq >= 0.5 - 1e-12 and Fm <= 0.5 + 1e-12)
+                        le, lt = np.mean(sim[:, a] <= x), np.mean(sim[:, a] < x)
+                        simq += not (le >= 0.5 - 4.5 * se and lt <= 0.5 + 4.5 * se)
+                        worst = max(worst, (0.5 - le) / se, (lt - 0.5) / se)
+            report(defin == 0 and simq == 0 and batch_ok and nmiss >= 1,
+                   "weighted median vs simulation (%s, %s; %d weight rows: ones, bootstrap, zeros, jackknife, sparse; "
+                   "%d -9999 medians): definition on the pool %d bad, vs simulation %d bad (worst %.2f SE); batched "
+                   "rows == one row bitwise %s" % (label, calctype.upper(), len(boot) + len(jack) + 1, nmiss, defin,
+                                                   simq, worst, batch_ok))
+
+
+def _q(fn, *a, **k):
+    """fn(*a, **k) without its log lines (RecordCI / ExactFA print one per object and per duration)."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        return fn(*a, **k)
+
+
+def _median_case(calctype, method, nboot=10, rng_seed=5):
+    """A small RecordCI (+ ExactFA) case of synthetic storms: 12 storms in 4 years, durations 24 (parent), 1, 6 h."""
+    rng = np.random.default_rng(rng_seed)
+    trim = np.array([[0, .3, 1, 1], [.5, 1, 1, .8], [.6, 1, 1, 1]], dtype=np.float32)
+    H, W, T, n = 20, 24, 24, 12
+    storms = [synthetic_storm(rng, T, H, W) for _ in range(n)]
+    years = np.repeat(np.arange(2002, 2006), 3)
+    cattime = np.array([[np.datetime64("%d-07-01T00:00" % y) + np.timedelta64(h, "h") for h in range(T)] for y in years])
+    return dict(trim=trim, H=H, W=W, T=T, n=n, storms=storms, cattime=cattime, steps=[T, 1, 6], durs=[24., 1., 6.],
+                calctype=calctype, opts=_q(FR.parse_options, dict({"RECORDCI": method},
+                                                                   **({"RECORDNBOOT": nboot} if method == "bootstrap" else {}))))
+
+
+def _make_rc(c, folder, base, opts=None, nsim=100, levels=(2, 5, 10, 25, 50, 100)):
+    return _q(FR.RecordCI, opts or c["opts"], c["durs"], c["steps"], True, c["trim"], np.sum(c["trim"]), 60,
+              (c["H"], c["W"]), None, c["cattime"], list(range(2002, 2006)), 4, c["calctype"], nsim, False,
+              np.float32(levels), folder, base)
+
+
+def _make_ex(c, engine, record=None, nsim=100, nreal=10, levels=(2, 5, 10, 25, 50, 100)):
+    return _q(FR.ExactFA, engine, c["durs"], c["steps"], True, c["trim"], np.sum(c["trim"]), 60, (c["H"], c["W"]),
+              None, c["n"], 4, c["calctype"], nsim, nreal, False, np.float32(levels), "all_realizations", None,
+              record=record)
+
+
+def test_median_recordci():
+    """md_pt == ExactFA q50 bitwise; md_bt == Pool.quantiles per weight row; lv/ex unchanged; the median file."""
+    ok, msg = True, []
+    iq = list(FR.PROBS).index(50.)
+    for calctype in ("pds", "ams"):
+        for method in ("bootstrap", "jackknife"):
+            c = _median_case(calctype, method)
+            with tempfile.TemporaryDirectory() as d:
+                rc = _make_rc(c, d, "t")
+                rc0 = _make_rc(c, d, "t")                                   # the same case, median=False
+                ex = _make_ex(c, "both", record=rc)
+                alone = _make_ex(c, "exact")
+                for i, s in enumerate(c["storms"]):
+                    rc.add_storm(i, s)
+                    rc0.add_storm(i, s)
+                    alone.add_storm(i, s)
+                for j in range(len(c["steps"])):
+                    a, e = ex.compute(j), alone.compute(j)
+                    b = rc.estimates(j, ex.ks)
+                    b0 = rc0.estimates(j, ex.ks, median=False)
+                    fresh = FR.Pool(rc.vals[j], rc.sgroup, rc.NY, rc._mreq(ex.ks))
+                    ref_bt = np.vstack([fresh.quantiles(w[None], ex.ks, [0.5], rc.ny_draw, rc.nsim, calctype)[0, :, 0]
+                                        for w in rc.C])
+                    same = (np.array_equal(b["md_pt"], a["q"][:, iq]) and np.array_equal(b["md_pt"], e["q"][:, iq])
+                            and np.array_equal(b["md_bt"], ref_bt) and "md_pt" not in b0
+                            and all(np.array_equal(b[k], b0[k]) for k in ("lv_pt", "ex_pt", "lv_bt", "ex_bt"))
+                            and b["md_bt"].shape == (rc.C.shape[0], len(ex.ks))
+                            and np.all(np.diff(b["md_pt"]) >= 0) and np.all(b["md_pt"] > 0))
+                    ok &= bool(same)
+                    msg.append("%s %s %gh %s" % (calctype.upper(), method[:4], c["durs"][j], "ok" if same else "DIFFER"))
+    report(ok, "RecordCI md_pt == ExactFA q50 bitwise (shared and own pool), md_bt == Pool.quantiles per weight row "
+           "(ny_draw), lv/ex unchanged by the median: " + ", ".join(msg))
+    # the file, in the exact path (ExactFA 'exact' calls RecordCI.write) and the Monte Carlo path; RECORDSAVE false
+    ok, msg = True, []
+    for method in ("bootstrap", "jackknife"):
+        c = _median_case("pds", method)
+        with tempfile.TemporaryDirectory() as d:
+            rc = _make_rc(c, os.path.join(d, "ex"), "t")
+            ex = _make_ex(c, "exact", record=rc)
+            rm = _make_rc(c, os.path.join(d, "mc"), "t")
+            rn = _make_rc(c, os.path.join(d, "ns"), "t", opts=dict(c["opts"], save=False))
+            for i, s in enumerate(c["storms"]):
+                ex.add_storm(i, s)
+                rm.add_storm(i, s)
+                rn.add_storm(i, s)
+            names = ["drop%d" % y for y in range(2002, 2006)] if method == "jackknife" else \
+                ["rec%d" % (b + 1) for b in range(10)]
+            for j, dur in enumerate(c["durs"]):
+                name = "t_%g" % dur
+                fe, fm, fn = (os.path.join(d, k, name) for k in ("ex", "mc", "ns"))
+                _q(ex.write, j, fe, name)
+                sortrain = np.full((len(ex.ks), 5), 50.)                     # any realizations: the median file does
+                _q(rm.write, j, sortrain, ex.exceedp, ex.returnperiod, fm, name, "all_realizations", None)  # not use them
+                _q(rn.write, j, sortrain, ex.exceedp, ex.returnperiod, fn, name, "all_realizations", None)
+                med = open(os.path.join(fe, name + "_RecordBootstrapMedian.csv")).read().splitlines()
+                medm = open(os.path.join(fm, name + "_RecordBootstrapMedian.csv")).read().splitlines()
+                q50 = [ln.split(",")[list(FR.PROBS).index(50.) + 4] for ln in
+                       open(os.path.join(fe, name + "_FreqExact.csv")).read().splitlines() if not ln.startswith("#")][1:]
+                boot = open(os.path.join(fe, name + "_RecordBootstrap.csv")).read().splitlines()
+                good = (med[0] == "prob.exceed,returnperiod,sst_median," + ",".join(names) and med == medm
+                        and [ln.split(",")[2] for ln in med[1:]] == q50
+                        and [ln.split(",")[:2] for ln in med[1:]] == [ln.split(",")[:2] for ln in boot[1:]]
+                        and boot[0].split(",")[3:] == med[0].split(",")[3:]
+                        and not os.path.exists(os.path.join(fn, name + "_RecordBootstrapMedian.csv"))
+                        and os.path.exists(os.path.join(fn, name + "_RecordCI.csv")))
+                ok &= good
+                msg.append("%s %gh %s" % (method[:4], dur, "ok" if good else "BAD"))
+    report(ok, "_RecordBootstrapMedian.csv: header (rec1..recB / drop<year>), rows as _RecordBootstrap.csv, sst_median "
+           "== _FreqExact.csv q50 as printed, exact path == Monte Carlo path, none with RECORDSAVE false: "
+           + ", ".join(msg))
+
+
+def _write_run(root, base, c, scale, engine, rng, nsim=100, nreal=100):
+    """A synthetic MULTIPLEDURATIONS run folder root/<base>_<d>/ with the real writers: FREQENGINE engine ('both':
+    _FreqExact.csv + realizations simulated from the pool in _FreqAnalysis.csv, RainyDay's format; 'exact': no
+    realizations) and RECORDCI (all files). scale multiplies the storms (run B vs run A)."""
+    fullpath = os.path.join(root, base + "_24")
+    rc = _make_rc(c, fullpath, base, nsim=nsim)
+    ex = _make_ex(c, engine, record=rc, nsim=nsim, nreal=nreal)
+    for i, s in enumerate(c["storms"]):
+        ex.add_storm(i, s * np.float32(scale))
+    if engine == "exact":
+        ex.write_all(root, base, fullpath, base + "_24")
+        return
+    sims = [simulate(rc.vals[j], np.zeros(c["n"], np.int64), np.ones(1, np.int64), 4, nsim, ex.ks, c["calctype"], nreal,
+                     rng).T for j in range(len(c["durs"]))]
+    ex.write_all(root, base, fullpath, base + "_24")
+    for j, d in enumerate(c["durs"]):
+        name = base + "_" + RDF.durtag(d)
+        folder = os.path.join(root, name)
+        tab = np.column_stack((ex.exceedp, ex.returnperiod, sims[j]))
+        np.savetxt(os.path.join(folder, name + "_FreqAnalysis.csv"), tab, delimiter=",", fmt="%6.2f", comments="",
+                   header="prob.exceed,returnperiod," + ",".join("rlz%d" % (i + 1) for i in range(nreal)))
+        rc.write(j, sims[j], ex.exceedp, ex.returnperiod, folder, name, "all_realizations", None)
+
+
+def test_compare_runs_median():
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import compare_runs as CR
+    rng = np.random.default_rng(31)
+    c = _median_case("pds", "bootstrap", nboot=40, rng_seed=12)
+
+    def run(A, B, stat="median", engine="auto"):
+        args = argparse.Namespace(stat=stat, engine=engine, margin=5., level=90., seed=42, nboot_mc=2000, bh=False,
+                                  durations=None, returnperiods=None)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            df = CR.finish(CR.compare_pair(A, B, args), args)
+        return df, out.getvalue()
+
+    def csv(folder, name, suffix):
+        import pandas as pd
+        return pd.read_csv(os.path.join(folder, name + suffix), comment="#", skipinitialspace=True)
+
+    with tempfile.TemporaryDirectory() as root:
+        for base, scale, engine in (("A", 1.0, "both"), ("B", 1.08, "both"), ("Ax", 1.0, "exact"), ("Bx", 1.08, "exact")):
+            _q(_write_run, root, base, c, scale, engine, rng)
+        for d in c["durs"]:                                   # an "older" run B: no _RecordBootstrapMedian.csv
+            t = RDF.durtag(d)
+            shutil.copytree(os.path.join(root, "B_" + t), os.path.join(root, "Bold_" + t))
+            for f in os.listdir(os.path.join(root, "Bold_" + t)):
+                os.rename(os.path.join(root, "Bold_" + t, f), os.path.join(root, "Bold_" + t, f.replace("B_", "Bold_", 1)))
+            os.remove(os.path.join(root, "Bold_" + t, "Bold_%s_RecordBootstrapMedian.csv" % t))
+        A, B, Ax, Bx, Bold = (os.path.join(root, x) for x in ("A", "B", "Ax", "Bx", "Bold"))
+        cols_mean = list(run(A, B, stat="mean")[0].columns)
+        res = []
+        # 1. Monte Carlo + record from the new file
+        df, out = run(A, B)
+        good = (df["rec_source"] == "median").all() and "WARNING" not in out and df["engine_a"].eq("montecarlo").all()
+        for _, r in df.iterrows():
+            t = RDF.durtag(r["duration_h"])
+            ma, mb = csv(os.path.join(root, "A_" + t), "A_" + t, "_RecordBootstrapMedian.csv"), \
+                csv(os.path.join(root, "B_" + t), "B_" + t, "_RecordBootstrapMedian.csv")
+            fa = csv(os.path.join(root, "A_" + t), "A_" + t, "_FreqAnalysis.csv")
+            i = int(np.where(np.isclose(ma["returnperiod"], r["returnperiod"]))[0][0])
+            rec = 100. * (mb.filter(regex=r"^rec").values[i] - ma.filter(regex=r"^rec").values[i]) / \
+                ma.filter(regex=r"^rec").values[i]
+            pt = 100. * (mb["sst_median"][i] - ma["sst_median"][i]) / ma["sst_median"][i]
+            good &= np.isclose(r["rec_delta_point_pct"], pt, rtol=0, atol=1e-12)
+            good &= np.allclose([r["rec_ci90_lo"], r["rec_ci90_hi"]], np.percentile(rec, [5, 95]), rtol=0, atol=1e-12)
+            good &= np.isclose(r["stat_a_mm"], np.median(fa.filter(regex=r"^rlz").values[i]), rtol=0, atol=1e-12)
+            good &= r["mc_ci90_hi"] > r["mc_ci90_lo"]
+        res.append(("Monte Carlo + record (new file)", good))
+        # 2. the exact q50 path
+        dx, out = run(Ax, Bx)
+        good = (dx["rec_source"] == "median").all() and dx["engine_a"].eq("exact").all() and "WARNING" not in out
+        for _, r in dx.iterrows():
+            t = RDF.durtag(r["duration_h"])
+            qa, qb = csv(os.path.join(root, "Ax_" + t), "Ax_" + t, "_FreqExact.csv"), \
+                csv(os.path.join(root, "Bx_" + t), "Bx_" + t, "_FreqExact.csv")
+            i = int(np.where(np.isclose(qa["returnperiod"], r["returnperiod"]))[0][0])
+            good &= r["stat_a_mm"] == qa["q50"][i] and r["stat_b_mm"] == qb["q50"][i]
+            good &= r["mc_ci90_lo"] == r["mc_ci90_hi"] and np.isclose(r["mc_ci90_lo"], r["delta_pct"], rtol=0, atol=1e-9)
+            good &= np.isclose(r["rec_delta_point_pct"], r["delta_pct"], rtol=0, atol=1e-12)    # sst_median = q50
+        # --engine exact on 'both' runs: the same numbers as the exact runs (same pools, same draws)
+        de, _ = run(A, B, engine="exact")
+        good &= np.allclose(de["delta_pct"].values, dx["delta_pct"].values, rtol=0, atol=1e-12)
+        res.append(("exact q50 (zero-width Monte Carlo part, --engine exact)", good))
+        # 3. an older run: the fallback, warned once, recorded in rec_source; the record part = the mean's
+        dfb, out = run(A, Bold)
+        dm, _ = run(A, B, stat="mean")
+        warn = [ln for ln in out.splitlines() if ln.startswith("WARNING")]
+        good = (len(warn) == 1 and "run B " + Bold in warn[0] and "mean-fallback" in warn[0]
+                and (dfb["rec_source"] == "mean-fallback").all()
+                and np.allclose(dfb["rec_delta_point_pct"], dm["rec_delta_point_pct"], rtol=0, atol=1e-12)
+                and np.allclose(dfb["delta_pct"], df["delta_pct"], rtol=0, atol=1e-12)
+                and np.allclose(dfb["mc_ci90_lo"], df["mc_ci90_lo"], rtol=0, atol=1e-12)
+                and not np.allclose(dfb["rec_ci90_lo"], df["rec_ci90_lo"]))
+        res.append(("fallback warning (%s...)" % warn[0][:60] if warn else "fallback warning (none)", good))
+        # 4. mixed pair: Monte Carlo A vs exact Bx
+        dmx, out = run(A, Bx)
+        good = (dmx["engine_a"].eq("montecarlo").all() and dmx["engine_b"].eq("exact").all()
+                and (dmx["rec_source"] == "median").all() and (dmx["mc_ci90_hi"] > dmx["mc_ci90_lo"]).all()
+                and np.allclose(dmx["stat_a_mm"], df["stat_a_mm"], rtol=0, atol=1e-12)
+                and np.allclose(dmx["stat_b_mm"], dx["stat_b_mm"], rtol=0, atol=1e-12)
+                and np.allclose(dmx["rec_delta_point_pct"], df["rec_delta_point_pct"], rtol=0, atol=1e-12))
+        res.append(("mixed pair (Monte Carlo vs exact)", good))
+        # 5. column order: the existing columns in their positions, rec_source last
+        good = (list(df.columns) == cols_mean and cols_mean[-1] == "rec_source"
+                and cols_mean[-5:-1] == ["engine_a", "engine_b", "class_mc", "class"])
+        res.append(("columns (rec_source last)", good))
+    report(all(g for _, g in res), "compare_runs --stat median on synthetic runs: " +
+           ", ".join("%s %s" % (k, "ok" if g else "FAIL") for k, g in res))
+
+
 def main():
     test_helpers()
     test_draws()
@@ -603,6 +882,9 @@ def main():
     test_rows()
     test_exact_vs_recordci()
     test_exact_vs_simulation()
+    test_median_vs_simulation()              # GP 2026-10-27: the per-record median
+    test_median_recordci()
+    test_compare_runs_median()
     print("ALL PASS" if RES and all(RES) else "SOME TESTS FAILED (%d of %d)" % (RES.count(False), len(RES)))
     sys.exit(0 if RES and all(RES) else 1)
 
