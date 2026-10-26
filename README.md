@@ -14,6 +14,16 @@
 > (inherited from RainyDay_mod and new here). See `CLAUDE.md` for the rules and the validation matrix. The RainyDay_mod
 > description follows.
 
+### User's Guide
+
+- **The SST method and the control file:** the original RainyDay User's Guide,
+  [`UserGuide/RainyDay_Tutorial.ipynb`](UserGuide/RainyDay_Tutorial.ipynb). Everything in it still applies unless the
+  guide below says otherwise.
+- **Everything RainyDay_fast changes, adds or fixes:** the RainyDay_fast User's Guide,
+  [`UserGuide/RainyDay_fast_tutorial.ipynb`](UserGuide/RainyDay_fast_tutorial.ipynb): new and changed control-file
+  fields, the features (cropped input, light catalogs, MULTIPLEDURATIONS, the table engine, `RECORDCI`, `FREQENGINE`,
+  `compare_runs`), two case studies on real runs, validation, corrected bugs, known issues and the AORC data issues.
+
 ### Using RainyDay_fast for a new domain or dataset (GP 2026-10-22)
 
 **1. Crop once per domain or region.**

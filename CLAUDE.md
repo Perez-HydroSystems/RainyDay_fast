@@ -29,6 +29,15 @@ Any difference is a bug.
   - runs, catalogs and dumps go in `/Users/gjperezm/Databases/RainyDay_fast_tests/`;
   - crops go in `/Users/gjperezm/Databases/AORC_RainyDay/crops/`.
 
+**User's Guide (GP 2026-10-26):** `UserGuide/RainyDay_fast_tutorial.ipynb` (what RainyDay_fast changes, adds and
+fixes; companion to the original `UserGuide/RainyDay_Tutorial.ipynb`). Its code cells only read
+`UserGuide/fast_tutorial_data/` (real run outputs; `MANIFEST.md` has the md5s, settings and commands);
+`UserGuide/fast_tutorial_figures/make_figures.py` regenerates its 4 static PNGs. Re-execute it from `UserGuide/` with a
+Python that has nbconvert and ipykernel (e.g. the Hydro_process env):
+`jupyter nbconvert --to notebook --execute --inplace --ExecutePreprocessor.record_timing=False RainyDay_fast_tutorial.ipynb`
+(about 5 s; no warnings expected; the flag keeps timestamps out of the cell metadata).
+Update the guide when a change alters behaviour it documents.
+
 **Validation matrix** (`tools/make_test_jsons.py`, `tools/run_matrix.sh`, `tools/compare_dumps.py`):
 - **Shapes:**
   - Talequah (smoke test, 30 s);
