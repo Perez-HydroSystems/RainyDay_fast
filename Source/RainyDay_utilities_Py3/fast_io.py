@@ -46,6 +46,7 @@ import numpy as np
 import xarray as xr
 
 from . import RainyDay_functions as RainyDay
+from . import fast_parse as FPA                  # GP 2026-10-26: INCLUDEYEARS/EXCLUDEMONTHS as RainyDay_Py3.py
 
 LIGHT_SUFFIX = '_lightcatalog.nc'
 VIRTUAL_RE = re.compile(r'^(.*)_storm_(\d+)_(\d{8})\.nc$')
@@ -397,46 +398,50 @@ def readcatalog(path):
 # ---------------------------------------------------------------------------------------------------------------------
 def parse_years_months(cardinfo):
     """(includeyears, excludemonths) exactly as RainyDay_Py3.py parses INCLUDEYEARS / EXCLUDEMONTHS."""
-    try:
-        excludemonths = cardinfo["EXCLUDEMONTHS"]
-        if isinstance(excludemonths, str):
-            if ',' in excludemonths:
-                excludemonths = [np.int32(exstorm) for exstorm in excludemonths.split(",")]
-            elif '-' in excludemonths:
-                start_year, end_year = map(int, excludemonths.split('-'))
-                excludemonths = [exstorm for exstorm in range(start_year, end_year + 1)]
-            elif excludemonths.lower() == 'none':
-                excludemonths = []
-            else:
-                excludemonths = []
-        elif isinstance(excludemonths, list):
-            excludemonths = excludemonths
-        else:
-            excludemonths = []
-    except Exception:
-        excludemonths = []
-    try:
-        includeyr = cardinfo["INCLUDEYEARS"]
-        if isinstance(includeyr, str):
-            if includeyr.lower == "all":                 # (sic, as in RainyDay: "all" ends in the except below)
-                includeyears = False
-            elif ',' in includeyr:
-                includeyears = [np.int32(year) for year in includeyr.split(",")]
-            elif '-' in includeyr:
-                start_year, end_year = map(np.int32, includeyr.split('-'))
-                includeyears = [year for year in range(start_year, end_year + 1)]
-            else:
-                includeyears = [np.int32(includeyr)]
-        elif isinstance(includeyr, list):
-            if len(includeyr) == 0:
-                includeyears = False
-            else:
-                includeyears = includeyr
-        else:
-            includeyears = False
-    except Exception:
-        includeyears = False
-    return includeyears, excludemonths
+    # GP 2026-10-26: RainyDay_Py3.py now parses both with fast_parse (bugs B1-B4); same calls here so a crop covers
+    # exactly the files of the run. Old code (the old RainyDay_Py3.py parser):
+    # try:
+    #     excludemonths = cardinfo["EXCLUDEMONTHS"]
+    #     if isinstance(excludemonths, str):
+    #         if ',' in excludemonths:
+    #             excludemonths = [np.int32(exstorm) for exstorm in excludemonths.split(",")]
+    #         elif '-' in excludemonths:
+    #             start_year, end_year = map(int, excludemonths.split('-'))
+    #             excludemonths = [exstorm for exstorm in range(start_year, end_year + 1)]
+    #         elif excludemonths.lower() == 'none':
+    #             excludemonths = []
+    #         else:
+    #             excludemonths = []
+    #     elif isinstance(excludemonths, list):
+    #         excludemonths = excludemonths
+    #     else:
+    #         excludemonths = []
+    # except Exception:
+    #     excludemonths = []
+    # try:
+    #     includeyr = cardinfo["INCLUDEYEARS"]
+    #     if isinstance(includeyr, str):
+    #         if includeyr.lower == "all":                 # (sic, as in RainyDay: "all" ends in the except below)
+    #             includeyears = False
+    #         elif ',' in includeyr:
+    #             includeyears = [np.int32(year) for year in includeyr.split(",")]
+    #         elif '-' in includeyr:
+    #             start_year, end_year = map(np.int32, includeyr.split('-'))
+    #             includeyears = [year for year in range(start_year, end_year + 1)]
+    #         else:
+    #             includeyears = [np.int32(includeyr)]
+    #     elif isinstance(includeyr, list):
+    #         if len(includeyr) == 0:
+    #             includeyears = False
+    #         else:
+    #             includeyears = includeyr
+    #     else:
+    #         includeyears = False
+    # except Exception:
+    #     includeyears = False
+    # return includeyears, excludemonths
+    excludemonths = FPA.parse_excludemonths(cardinfo)        # same order as RainyDay_Py3.py
+    return FPA.parse_includeyears(cardinfo), excludemonths
 
 
 def run_inarea(cardinfo):

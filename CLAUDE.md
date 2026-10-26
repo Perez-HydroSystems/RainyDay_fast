@@ -168,6 +168,34 @@ bit-identical; `"exact"` skips the draws by design (no `np.random` call after th
     min/max 89–90 % in the central 90 %;
   - runs in `$FAST_TEST_ROOT/runs/{off2,exact,both,on2,on_exact,on_both,hucexact}`, pools in `dumps/both_pool`.
 
+**Bug fixes of 2026-10-26 (branch `fast/fixes`; README_CHANGES B9).**
+- **Module map:**
+  - `Source/RainyDay_utilities_Py3/fast_parse.py` (JSON parsing; numpy only, no `np.random`):
+    - `check_required` / `required_keys` (missing required keys);
+    - `parse_excludemonths` (wrap ranges `"12-3"`, single months `"8"`, lists of strings);
+    - `parse_includeyears` (`"all"`/`"none"` explicitly, lists of strings);
+    - `parse_excludestorms` (single storm `"17"`);
+    - `parse_calctype` (unknown values stop before the catalog);
+    - `parse_uncertainty` (numbers -> quantile band);
+    - `returnlevels_from_string` (comma string `"2,5,10"`);
+    - `default_nstorms` (NSTORMS absent on an existing catalog).
+    - **Rule:** inputs that parsed correctly before give the same objects (values, list vs array, `int` vs
+      `np.int32`); unreadable strings now stop with the accepted formats.
+  - Hooks in `RainyDay_Py3.py` (`GP 2026-10-26`, old code commented):
+    - `check_required` right after the JSON read;
+    - the parse hooks at the original locations;
+    - `default_nstorms` in the existing-catalog branch;
+    - the `np.int32` month in `catinclude` (EXCLUDEMONTHS on an existing catalog without INCLUDEYEARS);
+    - both rectangular catalog searches (scan and duration rewrite) call `catalogFFT_irregular_domainaware` with an
+      all-ones domain (`catalogNumba` is no longer called; `CATALOGACCELERATOR` has no effect).
+  - `RainyDay_functions.write_frequency_outputs`: `spreadmean` in the quantile branch (UNCERTAINTY as a number).
+  - `fast_io.parse_years_months` (crop tool) calls the same parsers.
+- **Tests:**
+  - `tools/test_parsing.py`: old blocks copied verbatim vs the current driver blocks, run with `exec`; one test per
+    fix and identical objects for the paper, Talequah and matrix JSONs.
+  - `tools/test_rect_catalog.py`: brute force at every anchor vs the rectangular search.
+  - Neither needs data.
+
 # CLAUDE.md — RainyDay GPU/acceleration testbed
 
 ## What this is
@@ -190,7 +218,9 @@ finds the max-rainfall storm placement — which dominates runtime for long reco
 
 Selected via env var `RAINYDAY_CATALOG_ENGINE` (read near the top of
 `Source/RainyDay_Py3.py`). Only active for `DOMAINTYPE: irregular`; rectangular
-domains always use the original `catalogNumba` path.
+domains always use the original `catalogNumba` path. (GP 2026-10-26, README_CHANGES B9: rectangular
+domains now use the per-step `catalogFFT_irregular_domainaware` with an all-ones domain,
+i.e. the `fft_perstep` search; `catalogNumba` crashed for masks >= 3 cells.)
 
 | Engine | What it is | Status |
 |---|---|---|

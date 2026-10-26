@@ -401,6 +401,184 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
   - Without `INCLUDEYEARS`, RainyDay's `nyears` counts storm end years; the exact engine uses it, as RainyDay does.
   - Memory: the RECORDCI pool (durations × storms × locations × 4 bytes), once even when both options are on.
 
+### B9. Bug fixes of 2026-10-26 (GP, branch `fast/fixes`). Status: done and verified; validation matrix pending.
+- **Commits:** pending.
+- **Where.** New parsing code is in `Source/RainyDay_utilities_Py3/fast_parse.py`, called from one-line hooks in
+  `RainyDay_Py3.py` (marked `GP 2026-10-26`, the replaced code kept as comments). No `np.random` call was added,
+  removed or moved.
+- **Rule kept.** Every input that already parsed correctly gives the same objects as before (values, list vs array,
+  `int` vs `np.int32`). `tools/test_parsing.py` checks this against verbatim copies of the old code; the paper's
+  configuration and the 5 matrix JSONs parse to identical objects.
+- **Tests** (no data needed): `tools/test_parsing.py` and `tools/test_rect_catalog.py`.
+- **Validation matrix** (5 shapes, production settings, on top of `fast/exact`): pending.
+
+#### B9.1 Rectangular-domain storm catalog search
+- **What.** With `DOMAINTYPE "rectangular"`, the catalog search (`RainyDay_Py3.py`, storm scan) and the
+  duration-rewrite search (catalog longer than `DURATION`, `DURATIONCORRECTION` false) now call
+  `catalogFFT_irregular_domainaware` with an all-ones domain mask: the exhaustive search of the irregular domains,
+  every anchor `0..W-mw`, `0..H-mh`. The old `catalogNumba` call is kept as a comment.
+- **Why.**
+  - **Fork regression (`0cc1f2c`).** That commit set `xlen = W-mw+1`, `ylen = H-mh+1` for the irregular kernel. The
+    mirrored `catalogNumba` of rectangular domains then sliced `mw-1` columns (`mh-1` rows): a numba "unable to
+    broadcast" ValueError for any mask 3 or more cells wide or tall.
+  - **Masks of 1–2 cells** ran, but returned wrong anchors: three mirrored quadrants stored the sum one cell away, the
+    last row and column got an empty slice (0), and the middle anchors were never evaluated and stayed 0.
+  - **The original RainyDay (`b14a011`)** used `xlen = W-mw`, `ylen = H-mh-2` with the same mirrored kernel. It never
+    searched the last anchor rows and also stored mirrored sums one cell away (`tools/test_rect_catalog.py` checks
+    both old calls).
+- **Consistency of the rest of the rectangular branch.** `xlen`/`ylen` are now just the anchor counts. They match the
+  search range, the uniform draws (`randint(0, W-mw+1)`) and the KDE grid (`kx`, `ky`). The KDE `checkind` therefore
+  drops storms on the first and last anchor, as intended. Nonuniform transposition samples the same anchor grid.
+  `xloop`, `yloop`, `rainsum` and `catalogstride` fed only `catalogNumba`.
+- **`CATALOGACCELERATOR` has no effect on either domain type.** Irregular domains have ignored it since the FFT search
+  (`5536ca0`). The run now prints that it is ignored, instead of "Good for you!".
+- **Engines.** Rectangular domains use the per-step search, the same one as the `fft_perstep` engine. The batched
+  engines (`RAINYDAY_CATALOG_ENGINE`, `COMPUTE`) stay irregular-only, which is the smallest change. A rectangle can use
+  them as `DOMAINTYPE "irregular"` with a rectangle polygon: the catalog is identical (below).
+- **Effect.** Rectangular catalogs and the frequency analyses on them change; irregular domains are unchanged
+  (section C says for which runs).
+- **Verified.**
+  - `tools/test_rect_catalog.py`, brute force with plain numpy at every anchor. Masks 1×1, 2×3, 5×7 and a fractional
+    6×9 basin mask with a hole; 26 random fields each (25 of 40×50, 1 of 184×184). The argmax anchor is identical in
+    every case. The FFT sum map is within 3.4e-5 mm absolute (2.4e-7 relative) of the float64 direct sums. The smallest
+    top-2 gap was 1.2e-4 relative, so there were no near-ties.
+  - Maxima planted at all 8 edge and corner anchors, including `(H-mh, W-mw)`, are found exactly.
+  - The fork's old call raises the ValueError for 2×3, 5×7 and the basin mask, and returns wrong anchors for 1×1 and
+    2×2. The original's call returns wrong anchors for planted maxima on the last row and the right edge.
+  - Talequah box (180×180) as `"rectangular"` (`AREA_EXTENT`): the catalog builds in 0.13 min and the frequency analysis
+    finishes for 1–72 h. The fork's old code stops with the ValueError at the first time step.
+  - The same box as `"irregular"`, with a rectangle polygon: `compare_catalogs.py --rtol 0` ALL PASS (10 storms, every
+    variable including the masks). The rectangular catalog is also bitwise equal to the matrix `ref` Talequah catalog
+    (`compare_light_catalog.py`, built by `batchfft` on the original polygon).
+  - There is no grid difference: `findsubbox` selects the same 180×180 grid for the float32 polygon bounding box, the
+    float32-exact `AREA_EXTENT`, the float64 polygon corners and the rounded corners. `rastermask(..., all_touched=True)`
+    of the rectangle polygon is all ones. In general, a box edge within float32 rounding of a grid line could select a
+    different row or column for the two domain types.
+  - Box area 6×8 on the rectangular Talequah domain: storms found at `x = W-mw`, `y = H-mh`; finishes 1, 6, 72 h.
+- **Limits.** The per-step search is slower than the batched engines on large domains, and is not multithreaded. The
+  duration-rewrite path keeps its other known problems (its window search skips the last window, and the times of all
+  storms but the last are left uninitialised).
+
+#### B9.2 `EXCLUDEMONTHS`: wrap-around ranges, single months, lists of strings
+- **What.** `fast_parse.parse_excludemonths`:
+  - `"12-3"` becomes `[12, 1, 2, 3]`;
+  - `"8"` becomes `[8]`;
+  - a list of strings (`["12","1"]`) becomes integers.
+  Everything else is as before: comma strings, ordinary ranges, `"none"`, JSON lists of numbers, other JSON types (`[]`).
+  A string that cannot be read (`"summer"`, `"1,3-5"`, `"13-2"`) now stops with the accepted formats.
+- **Why.**
+  - `range(12, 4)` is empty, so nothing was excluded, silently.
+  - A single string fell into `else: []`.
+  - A list of strings never matched the integer months, in `createfilelist` or in the catalog filter.
+- **Effect.** Runs that used these spellings now exclude the months they named. Before, they ran with every month
+  (section C).
+- **Verified.**
+  - `test_parsing.py`: one check per spelling, plus a battery of previously valid inputs with identical objects.
+  - New Talequah catalog with `"9-7"`: 31 August files and 3 storms. The old code read all 92 Jul–Sep files.
+  - Iowa pixel `ref` catalog (`CATALOGPATH`, no `INCLUDEYEARS`) with `"12-3"`: 377 of 400 storms kept, months 04–11.
+    The old code kept all 400. The frequency analysis (1, 24, 72 h) finishes in 31 s.
+  - Lists of month strings with `INCLUDEYEARS ["2002"]`: 62 Jul–Aug files. The old code found 0 files and stopped with
+    an IndexError.
+
+#### B9.3 `INCLUDEYEARS`: `"all"`, lists of strings
+- **What.** `fast_parse.parse_includeyears`. `"all"`, `"none"` (the original User's Guide uses both) and `""` explicitly
+  mean all years (`False`). A list of strings becomes `np.int32`. Ranges, comma strings, single years and JSON lists are
+  as before; the range `"2002-2023"` still gives Python `int`s. An unreadable string (`"2002to2010"`) now stops with a
+  message.
+- **Why.** `includeyr.lower == "all"` compared the method, which is never equal. `"all"` only worked because
+  `np.int32("all")` raised inside the surrounding `try`. Any unreadable string silently meant all years.
+- **Effect.** None for `"all"` and `"none"` (the same `False` as before). Lists of strings used to crash (empty file
+  list); unreadable strings used to run with all years and now stop.
+- **Verified.** `test_parsing.py`, and a catalog built with `INCLUDEYEARS ["2002"]` (B9.2).
+
+#### B9.4 `EXCLUDEMONTHS` on an existing catalog without `INCLUDEYEARS`
+- **What.** In the `CreateCatalog==False` filter, `catinclude` compares `np.int32(month)` with `excludemonths`, as
+  `stormlist` and the `INCLUDEYEARS` branch already did. This is a one-line change in `RainyDay_Py3.py`.
+- **Why.** The file-name month is the string `"08"`. It is never in a list of integers, so `catinclude` kept every
+  storm while `stormlist` dropped the excluded months. `catmax`/`catx`/`caty`/`cattime` no longer lined up with
+  `stormlist`: storm i was resampled with another storm's locations and times, and the Poisson rate `len(catmax)/nyears`
+  still counted the excluded storms.
+- **Effect.** Such runs change (section C). With `INCLUDEYEARS` set, or without `EXCLUDEMONTHS`, nothing changes.
+- **Verified.**
+  - Real runs on the Iowa pixel `ref` catalog with the driver itself (runpy, arrays inspected afterwards). Old code,
+    `"12,1,2,3"`: `stormlist` 377 storms, `catmax` 400, 372 rows belonging to other storms. New code, `"12-3"` and
+    `"12,1,2,3"`: 377 storms, every array row equal to its storm's catalog row, start months 04–11 only.
+  - `test_parsing.py` runs the driver's filter block on a synthetic catalog and checks the same.
+
+#### B9.5 `EXCLUDESTORMS`: a single storm number as a string
+- **What.** `fast_parse.parse_excludestorms`. `"17"` becomes `[17]`; everything else is as before. An unreadable string
+  stops with a message.
+- **Why.** A single string fell into `else: []`, so nothing was excluded.
+- **Effect.** Runs with such a value now exclude the storm (section C).
+- **Verified.** On the Talequah `ref` catalog, `"3"` gives 9 storms, aligned. The old code kept 10.
+
+#### B9.6 Unknown `CALCTYPE` stops before the catalog is built
+- **What.** `fast_parse.parse_calctype`. `ams`, `annmax`, `pds` and `partialduration` (any case) are read as before,
+  with the same messages. A missing key or JSON `null` gives `'ams'`, as before. Anything else stops at parse time,
+  before the storm catalog, with the valid values listed.
+- **Why.** The old code printed "Defaulting to Annual Maxima Series" but never set `calctype`. The run built the whole
+  catalog and then stopped with a NameError. A non-string value (e.g. a JSON number) silently ran as AMS.
+- **Effect.** Only inputs that crashed, or non-string values that silently ran as AMS, behave differently.
+- **Verified.** With an unknown value, the new code stops after 1 s and creates no `StormCatalog` folder. The old code
+  built the catalog (0.12 min), then raised `NameError: calctype`. `test_parsing.py` checks the hook precedes the
+  catalog block.
+
+#### B9.7 `UNCERTAINTY` as a number
+- **What.**
+  - `fast_parse.parse_uncertainty`: a JSON number `90`, or the string `"90"`, gives the quantile band.
+  - `RainyDay_functions.write_frequency_outputs`: one added line sets `meanrain` (the realization mean) in the
+    quantile branch.
+  - `"ensemble"`, `"all_realizations"` and other strings are read as before. Other strings, e.g. `"false"` in the
+    Talequah example, still fall back to `"ensemble"` with a message.
+- **Which quantiles.** For `X = 90` the CSV columns `minrain` and `maxrain` are `np.percentile` `(100-X)/2 = 5` and
+  `X + (100-X)/2 = 95` of the realizations, i.e. the 5th–95th percentiles, as the run prints. The original User's
+  Guide says "the range between the X/2 and 100-X/2 quantiles", which for 90 would be the 45th–55th. Its example
+  (realizations 50 and 950 of 1000) is right; the formula is wrong.
+- **Why.** A JSON number failed on `.lower()` and silently gave `"ensemble"`. The string path never set `spreadmean`,
+  so the run stopped at the very end: an `UnboundLocalError` in `write_frequency_outputs` (since A11), and a
+  `NameError` in the original RainyDay, where the same code ran at module level.
+- **Effect.** JSON numbers now give the 5th/95th band instead of min/max (section C). Numeric strings now finish.
+- **Verified.**
+  - Talequah `ref` catalog, `UNCERTAINTY 90` and `"90"`: both finish. All 14 CSVs (7 durations each) equal, as text,
+    the 5th percentile, mean and 95th percentile of the dumped realizations.
+  - The draws are bitwise identical to an `"all_realizations"` run.
+  - Old code: `90` wrote min/max; `"90"` stopped with `UnboundLocalError: spreadmean`.
+
+#### B9.8 Missing required keys
+- **What.** `fast_parse.check_required`, called right after the JSON is read, stops with one message that names every
+  missing key and what it is for.
+  - Always required (the driver reads them with no default): `MAINPATH`, `SCENARIONAME`, `CATALOGNAME`,
+    `CREATECATALOG`, `DURATION`, `VARIABLES`, `POINTAREA`.
+  - When the settings need them: `RAINPATH` (`CREATECATALOG` true); `AREA_EXTENT` (`CREATECATALOG` true and
+    `DOMAINTYPE` not `irregular`); `WATERSHEDSHP` (watershed/basin); `POINTLAT`/`POINTLON` (point/grid);
+    `BOX_YMIN/YMAX/XMIN/XMAX` (box/rectangle).
+- **Why.** The reads catch `ImportError`/`ValueError`/`IndexError`, never `KeyError`, so a missing key gave a raw
+  traceback.
+- **Effect.** Only runs that crashed.
+- **Verified.** `test_parsing.py`: every key above, plus the paper, Talequah and matrix JSONs pass. A run without
+  `POINTAREA` gives a clear message (old: `KeyError: 'POINTAREA'`).
+
+#### B9.9 `NSTORMS` absent with an existing catalog
+- **What.** `fast_parse.default_nstorms`. Without `NSTORMS`, a `CREATECATALOG false` run uses every storm of the catalog.
+  This is the same run as `NSTORMS` = the catalog's storm count, as the original User's Guide describes.
+- **Why.** `nstorms` was undefined (NameError at the catalog-size check), and `nstorms_default` later too.
+- **Effect.** Only runs that crashed.
+- **Verified.** Talequah `ref` catalog without `NSTORMS`: CSVs and dumps of all 7 durations are byte-identical to the
+  same run with `NSTORMS 10`. The old code stopped with `NameError: nstorms`.
+
+#### B9.10 `RETURNLEVELS` as a comma string (fork regression of `07021dd`)
+- **What.** `fast_parse.returnlevels_from_string`. `"2,5,10"` becomes `[2., 5., 10.]` before the existing list code,
+  which gives the same `np.float32` array as the JSON list `[2, 5, 10]`. JSON lists and `"all"` are unchanged. Any
+  other string still stops with the old message.
+- **Why.** The original User's Guide documents the comma string; the list fix of `07021dd` made it stop the run.
+- **Effect.** Only runs that stopped.
+- **Verified.** Talequah `ref` catalog with `"2,5,10,25,50,100"`: CSVs and dumps of all 7 durations are byte-identical
+  to the JSON-list run.
+
+**Not changed.** Other known problems of the original and the fork were left as they are, for example the substring
+key matching that still surrounds the `UNCERTAINTY` and `RETURNLEVELS` hooks, and the duration-rewrite path (B9.1,
+Limits).
+
 ---
 
 ## C. Which changes alter results relative to the original RainyDay
@@ -422,6 +600,19 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
   - `"exact"` replaces the Monte Carlo frequency analysis with its noise-free values, and by design skips the random
     draws (no `np.random` call after the seed). Its catalogs are identical; it writes no realizations and no
     `_FreqAnalysis.csv`.
+- **B9, the bug fixes of 2026-10-26, change results only for these configurations.** Every other configuration that
+  already ran, including the paper's, parses to identical objects and gives identical outputs.
+
+  | Fix | Configurations that ran before and now give different results |
+  |---|---|
+  | B9.1 rectangular catalog search | **Relative to the original RainyDay (`b14a011`):** every `DOMAINTYPE "rectangular"` catalog in general, because the original search never searched the last anchor rows and stored mirrored sums one cell away; hence the frequency results too. **Relative to RainyDay_mod and earlier RainyDay_fast:** masks 3 or more cells wide or tall crashed (fork regression of `0cc1f2c`) and now run; masks at most 2 × 2 cells (e.g. a 1×1 point or pixel) ran with wrong anchors and now change. The same holds for the duration-rewrite search. `CATALOGACCELERATOR` > 1 is now ignored. |
+  | B9.2 EXCLUDEMONTHS spellings | `EXCLUDEMONTHS` written as a range across the new year (`"12-3"`), a single month string (`"8"`) or a list of strings (`["8"]`): these months are now excluded (before: every month was used). An unreadable string now stops the run. |
+  | B9.3 INCLUDEYEARS spellings | None for `"all"` and `"none"`. An unreadable `INCLUDEYEARS` string (it meant all years) now stops the run. |
+  | B9.4 EXCLUDEMONTHS on an existing catalog | Existing catalog (`CREATECATALOG false` or `CATALOGPATH`) with `EXCLUDEMONTHS` and without `INCLUDEYEARS`: the storm arrays now line up with the storm files, and the Poisson rate counts only the kept storms. |
+  | B9.5 EXCLUDESTORMS single string | `EXCLUDESTORMS` as a single number string (`"17"`): the storm is now excluded. An unreadable string now stops the run. |
+  | B9.6 unknown CALCTYPE | A non-string `CALCTYPE` (e.g. a JSON number), which ran as AMS, now stops. Unknown strings used to crash after the catalog. |
+  | B9.7 numeric UNCERTAINTY | `UNCERTAINTY` as a JSON number (`90`): the CSV and PNG band is now the 5th–95th percentile instead of min–max. The mean column is unchanged. |
+  | B9.8–B9.10 required keys, NSTORMS absent, RETURNLEVELS string | None: these inputs crashed or stopped before. |
 
 ## D. New settings reference
 

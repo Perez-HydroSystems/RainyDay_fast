@@ -59,6 +59,7 @@ import RainyDay_utilities_Py3.fast_prof as FP        # GP 2026-10-22: RAINYDAY_T
 import RainyDay_utilities_Py3.fast_io as FIO          # GP 2026-10-22: CATALOGSTORAGE "light" (light storm catalog)
 import RainyDay_utilities_Py3.fast_sst as FST        # GP 2026-10-22: MULTIDURATIONENGINE "table" (RainyDay_fast fix 3)
 import RainyDay_utilities_Py3.fast_record as FR      # GP 2026-10-26: RECORDCI, record (sampling) uncertainty (adds outputs only)
+import RainyDay_utilities_Py3.fast_parse as FPA      # GP 2026-10-26: parsing fixes B1-B8, B22-B24 (one-line hooks below)
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -73,6 +74,8 @@ if os.environ.get("RAINYDAY_TRACEMALLOC","").strip() not in ("","0"):
     tracemalloc.start()
 
 # Storm-catalog engine for irregular domains (rectangular domains always use catalogNumba):
+# (GP 2026-10-26: B17: rectangular domains now use the per-step catalogFFT_irregular_domainaware with an all-ones
+#  domain mask, i.e. the 'fft_perstep' search; the engines below remain irregular-only)
 #   'batchfft'    : batched multithreaded FFTs over blocks of files (default; verified
 #                   bit-identical to 'fft_perstep' on the Talequah example, see RainyDay/tools)
 #   'batchfft_mp' : 'batchfft' distributed over worker processes (fastest for long records)
@@ -160,6 +163,10 @@ try:
         cardinfo = json.loads(read_file.read(), object_pairs_hook=RainyDay.dict_raise_on_duplicates)   # the "hook" catches instances of duplicate keys in the json file
 except FileNotFoundError:
     print("You either didn't specify a parameter file, or it doesn't exist on the source path given.")
+# GP 2026-10-26: B22: a missing required key (MAINPATH, SCENARIONAME, CATALOGNAME, CREATECATALOG, DURATION, VARIABLES,
+# POINTAREA; RAINPATH/AREA_EXTENT/WATERSHEDSHP/POINTLAT/POINTLON/BOX_* when the settings need them) stops here with a
+# message; the reads below catch ImportError/ValueError/IndexError, so a missing key ended in a KeyError traceback
+FPA.check_required(cardinfo)
 #%%
 
 
@@ -629,47 +636,55 @@ except:
 #
 #
 # # EXLCUDE CERTAIN MONTHS
-try:
-    excludemonths=cardinfo["EXCLUDEMONTHS"]
-    if isinstance(excludemonths, str):
-        if ',' in excludemonths:  ## For different months to be exlcuded from the analysis
-            excludemonths = [np.int32(exstorm) for exstorm in excludemonths.split(",")]
-        elif '-' in excludemonths:   ## For a range of months of storms to exclude from the analysis
-            start_year, end_year = map(int, excludemonths.split('-'))
-            excludemonths = [exstorm for exstorm in range(start_year, end_year + 1)]
-        elif excludemonths.lower() == 'none': 
-            excludemonths = []
-        else:
-            excludemonths =[]
-    elif isinstance(excludemonths, list):
-        excludemonths = excludemonths
-    else:
-        excludemonths = []
-except Exception:
-    excludemonths=[]
+# GP 2026-10-26: B1 (a range across the new year, "12-3", gave range(12,4) = [], nothing excluded), B2 (one month as a
+# string, "8", was ignored), B3 (a list of strings, ["12","1"], excluded nothing); fast_parse.parse_excludemonths returns
+# the same objects as the code below for every input that code read correctly. Old code:
+# try:
+#     excludemonths=cardinfo["EXCLUDEMONTHS"]
+#     if isinstance(excludemonths, str):
+#         if ',' in excludemonths:  ## For different months to be exlcuded from the analysis
+#             excludemonths = [np.int32(exstorm) for exstorm in excludemonths.split(",")]
+#         elif '-' in excludemonths:   ## For a range of months of storms to exclude from the analysis
+#             start_year, end_year = map(int, excludemonths.split('-'))
+#             excludemonths = [exstorm for exstorm in range(start_year, end_year + 1)]
+#         elif excludemonths.lower() == 'none':
+#             excludemonths = []
+#         else:
+#             excludemonths =[]
+#     elif isinstance(excludemonths, list):
+#         excludemonths = excludemonths
+#     else:
+#         excludemonths = []
+# except Exception:
+#     excludemonths=[]
+excludemonths=FPA.parse_excludemonths(cardinfo)       # GP 2026-10-26: B1, B2, B3
 #
 # # INCLUDE ONLY CERTAIN YEARS
-try:
-    includeyr=cardinfo["INCLUDEYEARS"]
-    if isinstance(includeyr , str):
-        if includeyr.lower == "all":
-            includeyears = False
-        elif ',' in includeyr:
-            includeyears = [np.int32(year) for year in includeyr.split(",")]
-        elif '-' in includeyr:
-            start_year, end_year = map(np.int32, includeyr.split('-'))
-            includeyears = [year for year in range(start_year, end_year + 1)]
-        else:
-            includeyears = [np.int32(includeyr)]
-    elif isinstance(includeyr, list):
-        if len(includeyr) == 0:
-            includeyears = False
-        else:
-            includeyears = includeyr
-    else:    
-        includeyears=False
-except Exception:
-    includeyears=False
+# GP 2026-10-26: B4 ("all" only worked because np.int32("all") raised inside the try below: includeyr.lower == "all"
+# compares the method), B3 (a list of strings gave an empty file list and a crash); same objects as the code below for
+# every input that code read correctly. Old code:
+# try:
+#     includeyr=cardinfo["INCLUDEYEARS"]
+#     if isinstance(includeyr , str):
+#         if includeyr.lower == "all":
+#             includeyears = False
+#         elif ',' in includeyr:
+#             includeyears = [np.int32(year) for year in includeyr.split(",")]
+#         elif '-' in includeyr:
+#             start_year, end_year = map(np.int32, includeyr.split('-'))
+#             includeyears = [year for year in range(start_year, end_year + 1)]
+#         else:
+#             includeyears = [np.int32(includeyr)]
+#     elif isinstance(includeyr, list):
+#         if len(includeyr) == 0:
+#             includeyears = False
+#         else:
+#             includeyears = includeyr
+#     else:
+#         includeyears=False
+# except Exception:
+#     includeyears=False
+includeyears=FPA.parse_includeyears(cardinfo)         # GP 2026-10-26: B3, B4
 #
 # # MINIMUM RETURN PERIOD THRESHOLD FOR WRITING RAINFALL SCENARIO (THIS WILL HAVE A HUGE IMPACT ON THE SIZE OF THE OUTPUT FILES!)  IN PRINCIPLE IT IS PERHAPS BETTER TO USE AN INTENSITY BUT THIS IS CLEANER!
 try:
@@ -689,19 +704,22 @@ if CreateCatalog:
 if areatype=='point' or areatype=='pointlist':
     arfval=np.array([1.])
 
-try:
-    CalcType=cardinfo["CALCTYPE"]
-    if CalcType.lower()=='ams' or CalcType.lower()=='annmax':
-        calctype='ams'
-        print("You've selected to use Annual Maxima Series.")
-    elif CalcType.lower()=='pds' or CalcType.lower()=='partialduration':
-        calctype='pds'
-        print("You've selected to use Partial Duration Series.")
-    else:
-        print("Unrecognized entry for CALCTYPE. Defaulting to Annual Maxima Series.")
-except Exception:
-    calctype='ams'
-    print("Nothing provided for CALCTYPE. Defaulting to Annual Maxima Series.")
+# GP 2026-10-26: B7: an unknown CALCTYPE printed "Defaulting to Annual Maxima Series" but never set calctype (NameError
+# after the storm catalog was built); it now stops here. Missing CALCTYPE: 'ams', as before. Old code:
+# try:
+#     CalcType=cardinfo["CALCTYPE"]
+#     if CalcType.lower()=='ams' or CalcType.lower()=='annmax':
+#         calctype='ams'
+#         print("You've selected to use Annual Maxima Series.")
+#     elif CalcType.lower()=='pds' or CalcType.lower()=='partialduration':
+#         calctype='pds'
+#         print("You've selected to use Partial Duration Series.")
+#     else:
+#         print("Unrecognized entry for CALCTYPE. Defaulting to Annual Maxima Series.")
+# except Exception:
+#     calctype='ams'
+#     print("Nothing provided for CALCTYPE. Defaulting to Annual Maxima Series.")
+calctype=FPA.parse_calctype(cardinfo)                 # GP 2026-10-26: B7
 
 #
 #
@@ -751,24 +769,28 @@ if Scenarios:
 try:
     if np.any(np.core.defchararray.find(list(cardinfo.keys()),"UNCERTAINTY")>-1):
         spread=cardinfo["UNCERTAINTY"]
-        if spread.lower()=='ensemble':
-            spreadtype='ensemble'
-            print('"ensemble spread" will be calculated for precipitation frequency analysis...')
-        elif spread.lower()=='all_realizations':
-            spreadtype='all_realizations'
-            print(' The estimation from all the realization will be printed for precipitation frequency analysis...')
-        else:
-            try:
-                int(spread)
-            except:
-                print('unrecognized value for UNCERTAINTY.')
-            if int(spread)>=0 and int(spread)<=100:
-                spreadtype='quantile'
-                quantilecalc=int(spread)
-                printcalc=(100-quantilecalc)//2
-                print(str(printcalc)+'th-'+str(quantilecalc+printcalc)+'th interquantile range will be calculated for precipitation frequency analysis...')
-            else:
-                sys.exit('invalid quantile range for frequency analysis...')
+        # GP 2026-10-26: B8: a JSON number (90) fell back to 'ensemble' silently (spread.lower() failed); a numeric
+        # string ("90") ran to the end and crashed in write_frequency_outputs (spreadmean undefined, fixed there). Both
+        # now give the quantile band; other values as before. quantilecalc is None unless 'quantile'. Old code:
+        # if spread.lower()=='ensemble':
+        #     spreadtype='ensemble'
+        #     print('"ensemble spread" will be calculated for precipitation frequency analysis...')
+        # elif spread.lower()=='all_realizations':
+        #     spreadtype='all_realizations'
+        #     print(' The estimation from all the realization will be printed for precipitation frequency analysis...')
+        # else:
+        #     try:
+        #         int(spread)
+        #     except:
+        #         print('unrecognized value for UNCERTAINTY.')
+        #     if int(spread)>=0 and int(spread)<=100:
+        #         spreadtype='quantile'
+        #         quantilecalc=int(spread)
+        #         printcalc=(100-quantilecalc)//2
+        #         print(str(printcalc)+'th-'+str(quantilecalc+printcalc)+'th interquantile range will be calculated for precipitation frequency analysis...')
+        #     else:
+        #         sys.exit('invalid quantile range for frequency analysis...')
+        spreadtype,quantilecalc=FPA.parse_uncertainty(spread)   # GP 2026-10-26: B8
     else:
         spreadtype='ensemble'
 except Exception:
@@ -782,6 +804,10 @@ try:
             alllevels=True
         else:
             alllevels=False
+            # GP 2026-10-26: B24: a comma string "2,5,10" (the original User's Guide format) stopped below since the
+            # list fix of 07021dd; it is now read as the list [2.,5.,10.] (np.float32 gives the same array as for the
+            # JSON list [2,5,10]); a JSON list and "all" are unchanged
+            speclevels=FPA.returnlevels_from_string(speclevels)
             if isinstance(speclevels, (list, np.ndarray)):
                 try:
                     speclevels=np.float32(speclevels)
@@ -916,7 +942,10 @@ except Exception:
     catalogstride=1
 if isinstance(catalogstride, int):
     if catalogstride>1:
-        print("You've decided to speed up the storm catalog identification by not examining every possibility. Good for you!")
+        # GP 2026-10-26: B17: the catalog search is the exhaustive FFT for both domain types (catalogNumba, the only user
+        # of catalogstride, is no longer called), so CATALOGACCELERATOR has no effect. Old message:
+        # print("You've decided to speed up the storm catalog identification by not examining every possibility. Good for you!")
+        print("CATALOGACCELERATOR is ignored: the storm catalog search examines every location (exhaustive FFT) for both domain types.")
         
 # GP 2026-10-26: RECORDCI (optional, default off; RainyDay_fast fast_record.py): record (sampling) uncertainty of the
 # frequency analysis. Parsed and checked here, before the storm catalog is built, so an unsupported run stops early.
@@ -984,6 +1013,9 @@ else:
     delt=np.timedelta64(stormtime[-1]-(stormtime[0]))
     catduration=(delt.astype('int')+rainprop.timeres)/60.
     stm_num = len(stormlist)
+    # GP 2026-10-26: B23: without NSTORMS, nstorms was undefined here (NameError), and nstorms_default below too; now
+    # every storm of the catalog is used, the same run as NSTORMS = the catalog's storm count
+    nstorms,defaultstorms=FPA.default_nstorms(globals().get('nstorms'),defaultstorms,stm_num)
     if nstorms>stm_num:
         print("WARNING: The storm catalog has fewer storms than the specified nstorms")
         nstorms=stm_num 
@@ -1158,6 +1190,10 @@ else:
     yloop = (rainprop.subdimensions[0]-maskheight) / 2
 halfheight=np.int32(np.ceil(maskheight/2))
 halfwidth=np.int32(np.ceil(maskwidth/2))
+# GP 2026-10-26: B17: xlen, ylen (= W-mw+1, H-mh+1) are the numbers of anchors per row/column: the range of the
+# exhaustive catalog search (catalogFFT_irregular_domainaware, both domain types), of the rectangular uniform draws
+# (randint(0,W-mw+1)) and of the KDE grid (kx, ky), so the KDE checkind below drops storms on the first and last anchor
+# (0 and xlen-1 = W-mw) as intended. xloop, yloop, rainsum and catalogstride fed only catalogNumba, no longer called.
 
 if CreateCatalog:
     if ncfdom:
@@ -1395,7 +1431,13 @@ if CreateCatalog:
                 # rainmax,ycat,xcat=RainyDay.catalogNumba_irregular(temparray,trimmask,xlen,ylen,maskheight,maskwidth,rainsum,domainmask,stride=catalogstride)
 
             else:
-                rainmax,ycat,xcat=RainyDay.catalogNumba(temparray,trimmask,xlen,ylen,xloop,yloop,maskheight,maskwidth,rainsum,stride=catalogstride)
+                # GP 2026-10-26: B17: since 0cc1f2c xlen=W-mw+1, so the mirrored catalogNumba sliced mw-1 columns and
+                # raised a numba broadcast ValueError for masks >= 3 cells wide or tall (1-2 cell masks ran but kept
+                # the off-by-one stored location of three mirrored quadrants). The rectangular domain now uses the same
+                # exhaustive search as irregular domains (every anchor 0..W-mw, 0..H-mh) with domainmask = all ones
+                # (set above for DOMAINTYPE rectangular). Old code:
+                # rainmax,ycat,xcat=RainyDay.catalogNumba(temparray,trimmask,xlen,ylen,xloop,yloop,maskheight,maskwidth,rainsum,stride=catalogstride)
+                rainmax,ycat,xcat=RainyDay.catalogFFT_irregular_domainaware(temparray,trimmask,domainmask)   # GP 2026-10-26: B17
                 
             minind=np.argmin(catmax)
             tempmin=catmax[minind]
@@ -1548,20 +1590,23 @@ origstormsno=np.arange(0,len(stormlist),dtype='int32')
 
 try:
     exclude=cardinfo["EXCLUDESTORMS"]
-    if isinstance(exclude, str):
-        if ',' in exclude:
-            exclude = [np.int32(exstorm) for exstorm in exclude.split(",")]
-        elif '-' in exclude:
-            start_year, end_year = map(int, exclude.split('-'))
-            exclude = [exstorm for exstorm in range(start_year, end_year + 1)]
-        elif exclude.lower() == 'none':
-            exclude = []
-        else:
-            exclude =[]
-    elif isinstance(exclude, list):
-        exclude = exclude
-    else:
-        exclude = []
+    # GP 2026-10-26: B6: one storm number as a string ("17") was ignored (nothing excluded); same objects as the code
+    # below for every input that code read correctly. Old code:
+    # if isinstance(exclude, str):
+    #     if ',' in exclude:
+    #         exclude = [np.int32(exstorm) for exstorm in exclude.split(",")]
+    #     elif '-' in exclude:
+    #         start_year, end_year = map(int, exclude.split('-'))
+    #         exclude = [exstorm for exstorm in range(start_year, end_year + 1)]
+    #     elif exclude.lower() == 'none':
+    #         exclude = []
+    #     else:
+    #         exclude =[]
+    # elif isinstance(exclude, list):
+    #     exclude = exclude
+    # else:
+    #     exclude = []
+    exclude=FPA.parse_excludestorms(exclude)          # GP 2026-10-26: B6
     ## Check if storm numbe given in exlude exist in storm catalog.   
     if len(exclude) > 0:
         for storms in exclude:
@@ -1596,7 +1641,12 @@ modstormsno=origstormsno[includestorms]
 # THIS SECTION EXISTS IN CASE YOU WANT TO USE A PRE-EXISTING STORM CATALOG THAT HASN'T CONSIDERED ANY MONTH-BASED OR YEAR-BASED EXCLUSION
 if CreateCatalog==False:  
     if includeyears == False:
-        catinclude = [True if RainyDay.extract_date(storm, catalogname)[4:6]\
+        # GP 2026-10-26: B5: the file-name month is a string ("08") and excludemonths holds integers, so catinclude kept
+        # every storm while stormlist (np.int32 below) dropped the excluded months: catmax/catx/caty/cattime no longer
+        # lined up with stormlist. Same np.int32 month as stormlist and the INCLUDEYEARS branch. Old code:
+        # catinclude = [True if RainyDay.extract_date(storm, catalogname)[4:6]\
+        #          not in excludemonths else False for storm in stormlist]
+        catinclude = [True if np.int32(RainyDay.extract_date(storm, catalogname)[4:6])\
                  not in excludemonths else False for storm in stormlist]
         stormlist= [storm for storm in stormlist if np.int32(RainyDay.extract_date(storm, catalogname)\
                     [4:6]) not in excludemonths]
@@ -2591,7 +2641,10 @@ if FreqAnalysis:
                     # maxtemp,tempy,tempx=RainyDay.catalog_gpu_cupy(maxpass,trimmask)
 
                 else:
-                    maxtemp,tempy,tempx=RainyDay.catalogNumba(maxpass,trimmask,xlen,ylen,xloop,yloop,maskheight,maskwidth,rainsum,stride=catalogstride)
+                    # GP 2026-10-26: B17: same crash as the rectangular catalog search; now the same exhaustive search,
+                    # over every anchor of the grid (rectangular transposition draws from the whole grid). Old code:
+                    # maxtemp,tempy,tempx=RainyDay.catalogNumba(maxpass,trimmask,xlen,ylen,xloop,yloop,maskheight,maskwidth,rainsum,stride=catalogstride)
+                    maxtemp,tempy,tempx=RainyDay.catalogFFT_irregular_domainaware(maxpass,trimmask,np.ones(maxpass.shape,dtype='float32'))   # GP 2026-10-26: B17
      
                 if maxtemp>dur_max:
                     dur_max=maxtemp
