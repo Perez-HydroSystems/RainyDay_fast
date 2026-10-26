@@ -5,7 +5,8 @@ touched. The remote is `fast` = private `Perez-HydroSystems/RainyDay_fast`. Ther
 nothing can reach RainyDay_mod by accident.
 
 **Branches (GP 2026-10-26):** everything is on `main`. The feature branches `fast/io`, `fast/sst`, `fast/record` and
-`fast/exact` were merged (fast/exact by a merge commit on 2026-10-26) and deleted. The "(branch …)" notes below record
+`fast/exact` were merged (fast/exact by a merge commit on 2026-10-26) and deleted; `fast/median` (B10) likewise on
+2026-10-27. The "(branch …)" notes below record
 where each feature was developed. Start new work on a new branch from `main`.
 
 **Goal:** fixes 1–3, see `README.md` "RainyDay_fast":
@@ -173,13 +174,32 @@ bit-identical; `"exact"` skips the draws by design (no `np.random` call after th
     write and the sub-duration loop.
 - **Tools:** `tools/verify_exact_engine.py <variant>` (a `both` run made with `RAINYDAY_DUMP_EXACTPOOL=<dir>`: exact vs
   realizations, i.e. mean z, quantile binomial bands, min/max of N); `compare_runs.py --engine auto|montecarlo|exact
-  --stat mean|median|level`; `tools/test_record_ci.py` (44 tests).
+  --stat mean|median|level`; `tools/test_record_ci.py` (44 tests; B10 adds tests 12–14).
 - **Status (2026-10-26):**
   - `compare_dumps ref off2|both|on2|on_both --catalogs`: ALL PASS (80 each); 55/55 PNGs of `both` byte-identical;
   - `exact`: catalogs bitwise equal to `ref`, `_FreqExact.csv` 35/35 byte-identical to `both`;
   - `verify_exact_engine.py both`: mean |z| ≤ 2.64 (Iowa/Texas); quantiles 1603/1610 in the 99 % binomial band;
     min/max 89–90 % in the central 90 %;
   - runs in `$FAST_TEST_ROOT/runs/{off2,exact,both,on2,on_exact,on_both,hucexact}`, pools in `dumps/both_pool`.
+
+**Per-record median bootstrap (branch `fast/median`, GP 2026-10-27; README_CHANGES B10).** Adds one output file; every
+existing output stays byte-identical; no new JSON key; no `np.random` call.
+- **Module map:**
+  - `fast_record.RecordCI.estimates(j, ks, median=True)`: after `lv_*`/`ex_*` (a pool extension there cannot change
+    `expected`, whose grid starts at the pool floor), `md_pt` = `Pool.quantiles(ones, ks, [0.5], NY, ...)` and
+    `md_bt` = the same for every weight row `C` with `ny_draw` (bootstrap and jackknife). `md_pt` equals ExactFA's
+    `q50` bitwise when NY = RainyDay's nyears (the m-th largest pool value does not depend on the groups or the pool
+    depth); same −9999 rule (m > Wt).
+  - `RecordCI.write` computes them only with RECORDSAVE (`median=self.opts["save"]`) and writes
+    `<name>_RecordBootstrapMedian.csv` (`prob.exceed,returnperiod,sst_median,rec1..recB` or `drop<year>`, the formats of
+    `_RecordBootstrap.csv`) in every mode (Monte Carlo, exact, both). The per-duration RECORDCI log line ends with
+    `(median q50 X s)`.
+  - `tools/compare_runs.py`: `REC_FILES`/`has_rec`/`read_rec(kind)`; `--stat median` takes its record part from the
+    median file; exact runs use `q50` (zero-width Monte Carlo part); older runs fall back to the mean's bootstrap with a
+    one-line WARNING; new last column `rec_source` (`median`, `mean-fallback`, `mean`, `level`).
+  - `tools/test_record_ci.py`: tests 12–14 (weighted median vs `simulate()`, `md_pt` == `q50`, the file, compare_runs
+    median paths on synthetic run folders).
+- **Status:** see README_CHANGES B10 (validation variant `md_on_both`).
 
 **Bug fixes of 2026-10-26 (branch `fast/fixes`; README_CHANGES B9).**
 - **Module map:**

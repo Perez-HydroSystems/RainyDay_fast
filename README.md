@@ -163,6 +163,7 @@ Strings or JSON booleans are accepted (`"RECORDCI": true` means `"bootstrap"`).
   <scen>_24_FreqAnalysis.csv       unchanged: prob.exceed, returnperiod, rlz1..rlzN (Monte Carlo realizations)
   <scen>_24_FrequencyAnalysis.png  unchanged
   <scen>_24_RecordBootstrap.csv    prob.exceed, returnperiod, sst_expected, rec1..recB (jackknife: drop<year>)
+  <scen>_24_RecordBootstrapMedian.csv  prob.exceed, returnperiod, sst_median, rec1..recB (GP 2026-10-27: the median)
   <scen>_24_RecordCI.csv           the bands below, after a '#' header that defines them
 <scen>_72/                         (the parent DURATION: the same files, plus StormCatalog/)
   <scen>_RecordDraws.csv           once per run: how often each record year was drawn in each record
@@ -170,7 +171,15 @@ Strings or JSON booleans are accepted (`"RECORDCI": true` means `"bootstrap"`).
 ```
 
 `_RecordBootstrap.csv` has the same rows (return periods) as `_FreqAnalysis.csv` and is the record analogue of the
-realization columns: any percentile can be taken from it. `_RecordCI.csv` columns (read it with `comment='#'`):
+realization columns: any percentile can be taken from it.
+
+**`_RecordBootstrapMedian.csv` (GP 2026-10-27).** The same records for the median of the realizations: `sst_median` is
+the exact median *q50* of X_(k), the T-yr value of one realization (it equals `q50` of `_FreqExact.csv` when
+`INCLUDEYEARS` is set; the median of the realizations estimates it), and `rec<b>` is the same quantile with record b's
+year weights (`Pool.quantiles` at 0.5, exact pool values). It is written with `RECORDSAVE` "true" in every mode
+(Monte Carlo, `FREQENGINE` "exact" or "both"); no new key. `compare_runs.py --stat median` takes its record part from it.
+
+`_RecordCI.csv` columns (read it with `comment='#'`):
 
 | Column | Meaning | Is it a CI? |
 |---|---|---|
@@ -192,6 +201,9 @@ python tools/compare_runs.py MAINPATH/<SCEN_A> MAINPATH/<SCEN_B> --stat median -
 ```
 
 - Δ = 100 (B − A)/A of the realization median (or mean), per duration and return period.
+- GP 2026-10-27: the record part of `--stat median` comes from `_RecordBootstrapMedian.csv`; of `--stat mean`, from
+  `_RecordBootstrap.csv`. For runs made before the median file existed, `--stat median` falls back to the mean's
+  record bootstrap (an approximation), prints a warning and writes `mean-fallback` in the last column `rec_source`.
 - Its CI combines the Monte Carlo error (unpaired bootstrap of the realizations of each run) with the record error
   (the paired bootstrap records of the two runs: the same drawn years, so the shared years largely cancel in Δ).
 - Both runs must have identical `_RecordDraws.csv` (same record years, method, seed, B and block); otherwise it stops.
@@ -305,9 +317,12 @@ With `FREQENGINE` on, RECORDCI also writes `<name>_RecordBootstrapLevel.csv`, th
 
 **`compare_runs.py` with exact runs.**
 - `--engine auto|montecarlo|exact`. `auto` uses the realizations when a run has them, else `_FreqExact.csv`.
-- `--stat mean|level` work with exact runs. `median` is the median of the realizations, so it needs Monte Carlo runs.
+- `--stat mean|level|median` work with exact runs. For an exact run, `median` is `q50` of `_FreqExact.csv`: the exact
+  median of one realization's T-yr value, which the median of the realizations estimates (GP 2026-10-27; before, it
+  stopped). Its record part comes from `_RecordBootstrapMedian.csv`.
 - An exact statistic has no Monte Carlo noise. With two exact runs, the CI of Δ is the record part only.
-- Mixed pairs (Monte Carlo vs exact) are allowed: the Monte Carlo part comes from the Monte Carlo run alone.
+- Mixed pairs (Monte Carlo vs exact) are allowed, for `--stat mean` and `median`: the Monte Carlo part comes from the
+  Monte Carlo run alone.
 
 **Scope.** The same as `RECORDCI`: uniform transposition (irregular or rectangular domain), `RESAMPLING` poisson,
 `CALCTYPE` pds or ams, `POINTAREA` watershed or box, one duration or `MULTIPLEDURATIONS`. Other settings stop the run at
