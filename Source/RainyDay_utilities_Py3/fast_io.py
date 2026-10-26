@@ -398,7 +398,7 @@ def readcatalog(path):
 # ---------------------------------------------------------------------------------------------------------------------
 def parse_years_months(cardinfo):
     """(includeyears, excludemonths) exactly as RainyDay_Py3.py parses INCLUDEYEARS / EXCLUDEMONTHS."""
-    # GP 2026-10-26: RainyDay_Py3.py now parses both with fast_parse (bugs B1-B4); same calls here so a crop covers
+    # GP 2026-10-26: RainyDay_Py3.py now parses both with fast_parse (README_CHANGES B9); same calls here so a crop covers
     # exactly the files of the run. Old code (the old RainyDay_Py3.py parser):
     # try:
     #     excludemonths = cardinfo["EXCLUDEMONTHS"]

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-GP 2026-10-26: B17, rectangular-domain storm-catalog search. Brute force (plain numpy, every anchor) vs the search the
+GP 2026-10-26: rectangular-domain storm-catalog search (README_CHANGES B9.1). Brute force (plain numpy, every anchor) vs the search the
 driver now uses for DOMAINTYPE rectangular (RainyDay_functions.catalogFFT_irregular_domainaware with an all-ones domain
 mask, in the catalog scan and in the duration-rewrite search). No input data needed.
 
@@ -15,8 +15,12 @@ Checks, on synthetic float32 fields (NaN-free, as the driver's nansum windows):
      some of them and stored others one cell off).
   3. the valid-anchor map is (H-mh+1, W-mw+1) = (ylen, xlen) of the driver: the same range as the rectangular uniform
      draws (randint(0, W-mw+1)) and the KDE grid (kx, ky).
-  4. the old call (catalogNumba with the driver's xlen = W-mw+1, ylen = H-mh+1) for the record: a numba broadcast
-     ValueError for masks >= 3 cells wide or tall; for 1-2 cell masks it runs but returns wrong anchors.
+  4. the old calls, for the record:
+     - the fork's (catalogNumba with xlen = W-mw+1, ylen = H-mh+1, since 0cc1f2c): a numba broadcast ValueError for
+       masks >= 3 cells wide or tall; for 1-2 cell masks it runs but returns wrong anchors;
+     - the original's (b14a011: xlen = W-mw, ylen = H-mh-2): runs, but returns wrong anchors for maxima planted on
+       the last anchor rows and the right edge (rows H-mh-2..H-mh are never searched; mirrored sums are stored one
+       cell away).
   5. both driver call sites use the new search (source check).
 """
 import sys
@@ -168,10 +172,31 @@ def test_old_kernel():
                                               "planted maxima" % (name, wrong))
 
 
+def test_original_kernel():
+    """for the record: the original RainyDay (b14a011) call, xlen = W-mw, ylen = H-mh-2, same mirrored kernel"""
+    rng = np.random.default_rng(11)
+    H, W = 30, 37
+    for name, tm in masks():
+        mh, mw = tm.shape
+        xlen, ylen = W - mw, H - mh - 2
+        xloop = (W - mw - 1) / 2 if (W - mw) % 2 != 0 else (W - mw) / 2
+        yloop = (H - mh - 1) / 2 if (H - mh) % 2 != 0 else (H - mh) / 2
+        wrong, n = 0, 0
+        for ty, tx in ((H - mh, 5), (H - mh - 1, 9), (4, W - mw), (11, W - mw - 1), (H - mh, W - mw)):
+            f = field(rng, H, W)
+            f[ty:ty + mh, tx:tx + mw][tm > 0] += 200.
+            _, y, x = RDF.catalogNumba(f, tm, xlen, ylen, xloop, yloop, mh, mw, np.zeros((ylen, xlen), np.float32))
+            wrong += (y, x) != (ty, tx)
+            n += 1
+        report(wrong == n, "original (b14a011) catalogNumba, mask %-30s wrong anchor for %d of %d maxima planted on the "
+                           "last rows / right edge" % (name, wrong, n))
+
+
 def test_driver_hooks():
     src = (REPO / "Source" / "RainyDay_Py3.py").read_text().split("\n")
     live = [s for s in src if "catalogNumba(" in s and not s.strip().startswith("#")]
-    hooks = [s for s in src if "catalogFFT_irregular_domainaware(" in s and "B17" in s and not s.strip().startswith("#")]
+    hooks = [s for s in src if "catalogFFT_irregular_domainaware(" in s and "rectangular catalog search" in s
+             and not s.strip().startswith("#")]
     report(len(live) == 0 and len(hooks) == 2, "driver: no live catalogNumba call; 2 rectangular call sites use "
                                                "catalogFFT_irregular_domainaware (catalog scan, duration rewrite)")
 
@@ -181,6 +206,7 @@ def main():
     test_edges()
     test_ranges()
     test_old_kernel()
+    test_original_kernel()
     test_driver_hooks()
     print()
     print("ALL PASS (%d checks)" % len(RES) if RES and all(RES) else "SOME TESTS FAILED (%d of %d)" % (RES.count(False), len(RES)))

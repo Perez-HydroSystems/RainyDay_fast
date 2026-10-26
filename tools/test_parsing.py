@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
-GP 2026-10-26: unit tests of the parsing fixes B1-B8, B22-B24 (Source/RainyDay_utilities_Py3/fast_parse.py and their
-hooks in Source/RainyDay_Py3.py; B8 also in RainyDay_functions.write_frequency_outputs). No input data needed.
+GP 2026-10-26: unit tests of the parsing fixes of README_CHANGES B9 (Source/RainyDay_utilities_Py3/fast_parse.py and their
+hooks in Source/RainyDay_Py3.py; numeric UNCERTAINTY also in RainyDay_functions.write_frequency_outputs). No input data needed.
 
     python tools/test_parsing.py          (RainyDay_Env; a few seconds; PASS/FAIL per check, ALL PASS at the end)
 
@@ -10,21 +10,21 @@ the fixes), run with exec(). The NEW behaviour is the CURRENT driver code: the b
 Source/RainyDay_Py3.py by markers and run with exec() in the same way (so the hooks themselves are tested, including the
 try/except around them). Each test documents the old behaviour (asserted on OLD_BLOCKS) and asserts the new one.
 
-  B1  EXCLUDEMONTHS "12-3"                -> old [] (nothing excluded, silently)        new [12, 1, 2, 3]
-  B2  EXCLUDEMONTHS "8"                   -> old []                                    new [8]
-  B3  EXCLUDEMONTHS / INCLUDEYEARS lists of strings -> old kept the strings (no month excluded; no year matched:
+  wrap range: EXCLUDEMONTHS "12-3"           -> old [] (nothing excluded, silently)        new [12, 1, 2, 3]
+  single month: EXCLUDEMONTHS "8"            -> old []                                    new [8]
+  string lists: EXCLUDEMONTHS / INCLUDEYEARS lists of strings -> old kept the strings (no month excluded; no year matched:
       empty file list, crash)            new np.int32
-  B4  INCLUDEYEARS "all"                  -> old False only through a caught ValueError  new False explicitly
-  B5  EXCLUDEMONTHS on an existing catalog without INCLUDEYEARS -> old catinclude kept every storm while stormlist
+  INCLUDEYEARS "all":                    -> old False only through a caught ValueError  new False explicitly
+  existing catalog: EXCLUDEMONTHS on an existing catalog without INCLUDEYEARS -> old catinclude kept every storm while stormlist
       dropped some (arrays misaligned)    new aligned
-  B6  EXCLUDESTORMS "17"                  -> old []                                    new [17]
-  B7  CALCTYPE "foo"                      -> old calctype undefined (NameError after the catalog)  new SystemExit at
+  EXCLUDESTORMS "17":                    -> old []                                    new [17]
+  unknown CALCTYPE "foo":                -> old calctype undefined (NameError after the catalog)  new SystemExit at
       parse time, before the catalog block; missing CALCTYPE -> 'ams' (unchanged)
-  B8  UNCERTAINTY 90 (JSON number)        -> old 'ensemble' silently; "90" -> old 'quantile' then NameError in
-      write_frequency_outputs             new ('quantile', 90) and the 5th/mean/95th percentile CSV is written
-  B22 missing required keys               -> old KeyError traceback                    new SystemExit naming the keys
-  B23 NSTORMS absent, existing catalog    -> old NameError (nstorms, then nstorms_default)  new nstorms = catalog count
-  B24 RETURNLEVELS "2,5,10"               -> old SystemExit                            new the same float32 array as
+  numeric UNCERTAINTY 90 (JSON)        -> old 'ensemble' silently; "90" -> old 'quantile' then UnboundLocalError
+      (a NameError) in write_frequency_outputs          new ('quantile', 90) and the 5th/mean/95th percentile CSV is written
+  missing required keys:                 -> old KeyError traceback                    new SystemExit naming the keys
+  NSTORMS absent, existing catalog:    -> old NameError (nstorms, then nstorms_default)  new nstorms = catalog count
+  RETURNLEVELS "2,5,10":                 -> old SystemExit                            new the same float32 array as
       the JSON list [2, 5, 10]
   Paper configuration (and the Talequah / matrix JSONs, and a battery of valid inputs): every parsed object identical
   to the old code's, including container and element types.
@@ -358,31 +358,31 @@ def is_exit(x, text=None):
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# B1, B2, B3, B4: EXCLUDEMONTHS / INCLUDEYEARS
+# EXCLUDEMONTHS / INCLUDEYEARS spellings
 # ---------------------------------------------------------------------------------------------------------------------
-def test_b1_wrap_range():
+def test_wrap_range():
     old, new = parse("excludemonths", {"EXCLUDEMONTHS": "12-3"}, "excludemonths")
     report(old == [] and same(new, [12, 1, 2, 3]),
-           "B1 EXCLUDEMONTHS '12-3': old %r (nothing excluded) -> new %r" % (old, new))
+           "[wrap range] EXCLUDEMONTHS '12-3': old %r (nothing excluded) -> new %r" % (old, new))
     old, new = parse("excludemonths", {"EXCLUDEMONTHS": "9-7"}, "excludemonths")
-    report(old == [] and same(new, [9, 10, 11, 12, 1, 2, 3, 4, 5, 6, 7]), "B1 EXCLUDEMONTHS '9-7': old %r -> new %r" % (old, new))
+    report(old == [] and same(new, [9, 10, 11, 12, 1, 2, 3, 4, 5, 6, 7]), "[wrap range] EXCLUDEMONTHS '9-7': old %r -> new %r" % (old, new))
     old, new = parse("excludemonths", {"EXCLUDEMONTHS": "13-2"}, "excludemonths")
-    report(old == [] and is_exit(new, "EXCLUDEMONTHS"), "B1 EXCLUDEMONTHS '13-2' (invalid wrap): old [] -> new stops with a message")
+    report(old == [] and is_exit(new, "EXCLUDEMONTHS"), "[wrap range] EXCLUDEMONTHS '13-2' (invalid wrap): old [] -> new stops with a message")
 
 
-def test_b2_single_month():
+def test_single_month():
     old, new = parse("excludemonths", {"EXCLUDEMONTHS": "8"}, "excludemonths")
-    report(old == [] and same(new, [np.int32(8)]), "B2 EXCLUDEMONTHS '8': old %r (ignored) -> new %r" % (old, new))
+    report(old == [] and same(new, [np.int32(8)]), "[single month] EXCLUDEMONTHS '8': old %r (ignored) -> new %r" % (old, new))
     old, new = parse("excludemonths", {"EXCLUDEMONTHS": "summer"}, "excludemonths")
-    report(old == [] and is_exit(new, "Accepted"), "B2 EXCLUDEMONTHS 'summer': old [] (ignored) -> new stops with the accepted formats")
+    report(old == [] and is_exit(new, "Accepted"), "[single month] EXCLUDEMONTHS 'summer': old [] (ignored) -> new stops with the accepted formats")
 
 
-def test_b3_string_lists():
+def test_string_lists():
     old, new = parse("excludemonths", {"EXCLUDEMONTHS": ["12", "1", "2"]}, "excludemonths")
     old_drops = [m for m in range(1, 13) if m in old]
     new_drops = [m for m in range(1, 13) if m in new]
     report(old_drops == [] and new_drops == [1, 2, 12] and same(new, [np.int32(12), np.int32(1), np.int32(2)]),
-           "B3 EXCLUDEMONTHS ['12','1','2']: old excludes %r -> new excludes %r (np.int32)" % (old_drops, new_drops))
+           "[string list] EXCLUDEMONTHS ['12','1','2']: old excludes %r -> new excludes %r (np.int32)" % (old_drops, new_drops))
     old, new = parse("includeyears", {"INCLUDEYEARS": ["2002", "2003"]}, "includeyears")
     files = ["AORC.%d0701.preciptemp.nc" % y for y in (2001, 2002, 2003, 2004)]
     with tempfile.TemporaryDirectory() as d:
@@ -392,26 +392,26 @@ def test_b3_string_lists():
         fn, ny = RDF.createfilelist(os.path.join(d, "AORC.*.preciptemp.nc"), new, [])
     report(len(fo) == 0 and [os.path.basename(f) for f in fn] == files[1:3] and ny == 2
            and same(new, [np.int32(2002), np.int32(2003)]),
-           "B3 INCLUDEYEARS ['2002','2003']: old createfilelist -> %d files (crash at flist[0]) -> new %d files, %d years"
+           "[string list] INCLUDEYEARS ['2002','2003']: old createfilelist -> %d files (crash at flist[0]) -> new %d files, %d years"
            % (len(fo), len(fn), ny))
     old, new = parse("excludemonths", {"EXCLUDEMONTHS": [12, "1"]}, "excludemonths")
-    report(same(new, [12, np.int32(1)]), "B3 mixed list [12,'1'] -> %r" % (new,))
+    report(same(new, [12, np.int32(1)]), "[string list] mixed list [12,'1'] -> %r" % (new,))
 
 
-def test_b4_all():
+def test_includeyears_all():
     g, _ = run("includeyr='all'\nflag = includeyr.lower == 'all'\n")
     for v in ("all", "ALL", "none", ""):
         old, new = parse("includeyears", {"INCLUDEYEARS": v}, "includeyears")
         report(g["flag"] is False and old is False and new is False,
-               "B4 INCLUDEYEARS %r: old False only via the caught ValueError ('all'.lower == 'all' is %r) -> new False"
+               "[INCLUDEYEARS all] INCLUDEYEARS %r: old False only via the caught ValueError ('all'.lower == 'all' is %r) -> new False"
                % (v, g["flag"]))
     old, new = parse("includeyears", {"INCLUDEYEARS": "2002to2010"}, "includeyears")
     report(old is False and is_exit(new, "INCLUDEYEARS"),
-           "B4 INCLUDEYEARS '2002to2010': old False (all years, silently) -> new stops with a message")
+           "[INCLUDEYEARS all] INCLUDEYEARS '2002to2010': old False (all years, silently) -> new stops with a message")
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# B5, B6, B23: existing catalog (synthetic storm list; the driver's own filtering code)
+# existing catalog: months, EXCLUDESTORMS, NSTORMS (synthetic storm list; the driver's own filtering code)
 # ---------------------------------------------------------------------------------------------------------------------
 def synthetic_catalog():
     cat = "Test.nc"
@@ -450,41 +450,41 @@ def run_filter(which, base, excludemonths, includeyears, defaultstorms=False, ns
     return run(code, **ns)
 
 
-def test_b5_catinclude():
+def test_existing_catalog_months():
     base = synthetic_catalog()
-    old_card = {"EXCLUDEMONTHS": [12, 1, 2, 3]}                       # what "12-3" now parses to (B1)
+    old_card = {"EXCLUDEMONTHS": [12, 1, 2, 3]}                       # what "12-3" now parses to (wrap range)
     em = FPA.parse_excludemonths(old_card)
     go, eo = run_filter("old", base, em, False, nstorms=base["n"])
     gn, en = run_filter("new", base, em, False, nstorms=base["n"])
     nkeep = sum(int(RDF.extract_date(s, base["catalogname"])[4:6]) not in em for s in base["stormlist"])
     kept = [RDF.extract_date(s, base["catalogname"])[4:6] for s in gn["stormlist"]]
     report(eo is None and len(go["stormlist"]) == nkeep and len(go["catmax"]) == base["n"] and not aligned(go, base),
-           "B5 old: EXCLUDEMONTHS [12,1,2,3], no INCLUDEYEARS: stormlist %d storms but catmax %d (misaligned)"
+           "[existing-catalog months] old: EXCLUDEMONTHS [12,1,2,3], no INCLUDEYEARS: stormlist %d storms but catmax %d (misaligned)"
            % (len(go["stormlist"]), len(go["catmax"])))
     report(en is None and aligned(gn, base) and len(gn["stormlist"]) == nkeep
            and not any(int(m) in em for m in kept) and len(gn["modstormsno"]) == len(gn["stormlist"]),
-           "B5 new: %d of %d storms kept, catmax/catx/caty/cattime/modstormsno aligned with stormlist, kept months %s"
+           "[existing-catalog months] new: %d of %d storms kept, catmax/catx/caty/cattime/modstormsno aligned with stormlist, kept months %s"
            % (len(gn["stormlist"]), base["n"], sorted(set(kept))))
     # with INCLUDEYEARS the old code was already right: old == new
     go, _ = run_filter("old", base, em, [2002], nstorms=base["n"])
     gn, _ = run_filter("new", base, em, [2002], nstorms=base["n"])
     report(all(same(go[k], gn[k]) for k in ("stormlist", "catmax", "catx", "caty", "cattime", "modstormsno", "nstorms"))
-           and aligned(gn, base), "B5 with INCLUDEYEARS [2002]: new == old (already aligned)")
+           and aligned(gn, base), "[existing-catalog months] with INCLUDEYEARS [2002]: new == old (already aligned)")
     # no exclusion at all (paper configuration on an existing catalog): new == old
     go, _ = run_filter("old", base, [], False, nstorms=base["n"] - 2)
     gn, _ = run_filter("new", base, [], False, nstorms=base["n"] - 2)
     report(all(same(go[k], gn[k]) for k in ("stormlist", "catmax", "catx", "caty", "cattime", "modstormsno", "nstorms")),
-           "B5 EXCLUDEMONTHS none, NSTORMS < catalog: new == old")
+           "[existing-catalog months] EXCLUDEMONTHS none, NSTORMS < catalog: new == old")
 
 
-def test_b23_nstorms():
+def test_nstorms_absent():
     base = synthetic_catalog()
     # old: the existing-catalog branch compared an undefined nstorms
     g, e = run(OLD_BLOCKS["nstorms"], stormlist=base["stormlist"], defaultstorms=True)
-    report(isinstance(e, NameError), "B23 old: NSTORMS absent, existing catalog -> %r" % (e,))
+    report(isinstance(e, NameError), "[NSTORMS absent] old: NSTORMS absent, existing catalog -> %r" % (e,))
     g, e = run(NEW_BLOCKS["nstorms"](), stormlist=base["stormlist"], defaultstorms=True, stm_num=base["n"])
     report(e is None and g["nstorms"] == base["n"] and g["defaultstorms"] is False,
-           "B23 new: nstorms = %r (the catalog's %d storms), defaultstorms -> False" % (g.get("nstorms"), base["n"]))
+           "[NSTORMS absent] new: nstorms = %r (the catalog's %d storms), defaultstorms -> False" % (g.get("nstorms"), base["n"]))
     # then the month filter: old NameError on nstorms_default; new == the run with NSTORMS = catalog count
     em = [12, 1, 2, 3]
     go, eo = run_filter("old", base, em, False, defaultstorms=True, nstorms=base["n"])
@@ -492,14 +492,14 @@ def test_b23_nstorms():
     gx, ex = run_filter("new", base, em, False, defaultstorms=False, nstorms=base["n"])
     report(isinstance(eo, NameError) and en is None and ex is None and aligned(gn, base)
            and all(same(gn[k], gx[k]) for k in ("stormlist", "catmax", "catx", "caty", "cattime", "modstormsno", "nstorms")),
-           "B23: old %r in the month filter -> new identical to NSTORMS = %d" % (eo, base["n"]))
+           "[NSTORMS absent] old %r in the month filter -> new identical to NSTORMS = %d" % (eo, base["n"]))
     # NSTORMS given: unchanged (same object)
     v = np.int64(400)
     r = FPA.default_nstorms(v, False, 10)
-    report(r[0] is v and r[1] is False, "B23: NSTORMS given -> unchanged")
+    report(r[0] is v and r[1] is False, "[NSTORMS absent] NSTORMS given -> unchanged")
 
 
-def test_b6_single_storm():
+def test_excludestorms_string():
     base = synthetic_catalog()
     for card, want in (({"EXCLUDESTORMS": "5"}, [5]), ({"EXCLUDESTORMS": "3,5"}, [3, 5]), ({"EXCLUDESTORMS": "none"}, [])):
         res = []
@@ -514,39 +514,39 @@ def test_b6_single_storm():
         okalign = len(gn["stormlist"]) == len(gn["catmax"]) == len(gn["modstormsno"])
         if card["EXCLUDESTORMS"] == "5":
             report(eo is None and en is None and dropped_old == [] and dropped_new == want and okalign,
-                   "B6 EXCLUDESTORMS '5': old drops %r (ignored) -> new drops %r" % (dropped_old, dropped_new))
+                   "[EXCLUDESTORMS string] EXCLUDESTORMS '5': old drops %r (ignored) -> new drops %r" % (dropped_old, dropped_new))
         else:
             report(eo is None and en is None and dropped_old == dropped_new == want and same(go["exclude"], gn["exclude"]),
-                   "B6 EXCLUDESTORMS %r: new == old (drops %r)" % (card["EXCLUDESTORMS"], dropped_new))
+                   "[EXCLUDESTORMS string] EXCLUDESTORMS %r: new == old (drops %r)" % (card["EXCLUDESTORMS"], dropped_new))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# B7, B8, B22, B24
+# CALCTYPE, UNCERTAINTY, required keys, RETURNLEVELS
 # ---------------------------------------------------------------------------------------------------------------------
-def test_b7_calctype():
+def test_calctype():
     old, new = parse("calctype", {"CALCTYPE": "foo"}, "calctype")
     report(old is MISSING and is_exit(new, "'pds'"),
-           "B7 CALCTYPE 'foo': old calctype undefined (NameError later) -> new stops listing the valid values")
+           "[CALCTYPE] CALCTYPE 'foo': old calctype undefined (NameError later) -> new stops listing the valid values")
     for card in ({}, {"CALCTYPE": None}, {"CALCTYPE": "ams"}, {"CALCTYPE": "PDS"}, {"CALCTYPE": "annmax"},
                  {"CALCTYPE": "partialduration"}):
         old, new = parse("calctype", card, "calctype")
-        report(same(old, new), "B7 CALCTYPE %r: new %r == old" % (card.get("CALCTYPE", "(missing)"), new))
+        report(same(old, new), "[CALCTYPE] CALCTYPE %r: new %r == old" % (card.get("CALCTYPE", "(missing)"), new))
     # the hook runs before the storm catalog is built
     hook = next(k for k, s in enumerate(DRIVER) if "calctype=FPA.parse_calctype(cardinfo)" in s)
     cat = next(k for k, s in enumerate(DRIVER) if 'print("creating a new storm catalog...")' in s)
-    report(hook < cat, "B7 CALCTYPE parsed at driver line %d, before the catalog block (line %d)" % (hook + 1, cat + 1))
+    report(hook < cat, "[CALCTYPE] CALCTYPE parsed at driver line %d, before the catalog block (line %d)" % (hook + 1, cat + 1))
 
 
-def test_b8_uncertainty():
+def test_numeric_uncertainty():
     for spread in (90, "90"):
         old_t, new_t = parse("uncertainty", {"UNCERTAINTY": spread}, "spreadtype")
         old_q, new_q = parse("uncertainty", {"UNCERTAINTY": spread}, "quantilecalc")
         if spread == 90:
             report(old_t == "ensemble" and old_q is MISSING and new_t == "quantile" and same(new_q, 90),
-                   "B8 UNCERTAINTY 90 (JSON): old 'ensemble' (silently) -> new ('quantile', 90)")
+                   "[numeric UNCERTAINTY] UNCERTAINTY 90 (JSON): old 'ensemble' (silently) -> new ('quantile', 90)")
         else:
             report(old_t == "quantile" and same(old_q, 90) and new_t == "quantile" and same(new_q, 90),
-                   "B8 UNCERTAINTY '90': parse unchanged ('quantile', 90)")
+                   "[numeric UNCERTAINTY] UNCERTAINTY '90': parse unchanged ('quantile', 90)")
     # the write: old NameError (spreadmean), new 5th / mean / 95th percentiles
     rng = np.random.default_rng(1)
     sortrain = np.sort(rng.gamma(2., 20., (50, 100)).astype(np.float32), axis=0)
@@ -555,7 +555,7 @@ def test_b8_uncertainty():
         f = os.path.join(d, "x_FreqAnalysis.csv")
         g, e = run(OLD_BLOCKS["write"], sortrain=sortrain, quantilecalc=90, spreadtype="quantile", exceedp=exceedp,
                    returnperiod=1 / exceedp)
-        report(isinstance(e, NameError) and "spreadmean" in str(e), "B8 old write_frequency_outputs, quantile: %r" % (e,))
+        report(isinstance(e, NameError) and "spreadmean" in str(e), "[numeric UNCERTAINTY] old write_frequency_outputs, quantile: %r" % (e,))
         with redirect_stdout(io.StringIO()):
             RDF.write_frequency_outputs(sortrain, exceedp, 1 / exceedp, f, os.path.join(d, "x.png"), "quantile", 90, 100)
         out = np.loadtxt(f, delimiter=",", skiprows=1)
@@ -564,18 +564,18 @@ def test_b8_uncertainty():
         hdr = open(f).readline().strip()
         report(np.allclose(out, np.round(want, 2), atol=0.0051) and os.path.exists(os.path.join(d, "x.png"))
                and hdr == "prob.exceed,returnperiod,minrain,meanrain,maxrain",
-               "B8 new: UNCERTAINTY 90 writes the 5th percentile, mean and 95th percentile of the realizations (+ PNG)")
+               "[numeric UNCERTAINTY] new: UNCERTAINTY 90 writes the 5th percentile, mean and 95th percentile of the realizations (+ PNG)")
     for v in (150, "150", -1):
         _, new = parse("uncertainty", {"UNCERTAINTY": v}, "spreadtype")
-        report(is_exit(new, "invalid quantile range"), "B8 UNCERTAINTY %r: stops ('invalid quantile range')" % (v,))
+        report(is_exit(new, "invalid quantile range"), "[numeric UNCERTAINTY] UNCERTAINTY %r: stops ('invalid quantile range')" % (v,))
     _, new = parse("uncertainty", {"UNCERTAINTY": 90.5}, "spreadtype")
-    report(is_exit(new, "integer"), "B8 UNCERTAINTY 90.5: stops (integer 0-100)")
+    report(is_exit(new, "integer"), "[numeric UNCERTAINTY] UNCERTAINTY 90.5: stops (integer 0-100)")
 
 
-def test_b22_required():
+def test_required_keys():
     paper = paper_config()
     g, e = run("try:\n    wd=cardinfo['MAINPATH']\nexcept ImportError:\n    sys.exit('x')\n", cardinfo={})
-    report(isinstance(e, KeyError), "B22 old: missing MAINPATH -> %r (traceback)" % (e,))
+    report(isinstance(e, KeyError), "[required keys] old: missing MAINPATH -> %r (traceback)" % (e,))
     for drop in ("MAINPATH", "SCENARIONAME", "CATALOGNAME", "CREATECATALOG", "DURATION", "VARIABLES", "POINTAREA",
                  "RAINPATH", "WATERSHEDSHP"):
         c = dict(paper)
@@ -585,39 +585,39 @@ def test_b22_required():
             r = None
         except SystemExit as ex:
             r = ex
-        report(is_exit(r, drop + ":"), "B22 new: missing %s -> stops naming it" % drop)
+        report(is_exit(r, drop + ":"), "[required keys] new: missing %s -> stops naming it" % drop)
     c = dict(paper, DOMAINTYPE="rectangular")
     try:
         FPA.check_required(c)
         r = None
     except SystemExit as ex:
         r = ex
-    report(is_exit(r, "AREA_EXTENT:"), "B22 new: DOMAINTYPE rectangular + CREATECATALOG true without AREA_EXTENT -> stops")
+    report(is_exit(r, "AREA_EXTENT:"), "[required keys] new: DOMAINTYPE rectangular + CREATECATALOG true without AREA_EXTENT -> stops")
     c = dict(paper, CREATECATALOG="false")
     del c["RAINPATH"]
     FPA.check_required(c)
-    report(True, "B22 new: RAINPATH not required with CREATECATALOG false")
+    report(True, "[required keys] new: RAINPATH not required with CREATECATALOG false")
     c = {k: v for k, v in paper.items() if k not in ("MAINPATH", "DURATION")}
     try:
         FPA.check_required(c)
         r = None
     except SystemExit as ex:
         r = ex
-    report(is_exit(r, "MAINPATH:") and "DURATION:" in str(r.code), "B22 new: every missing key is named in one message")
+    report(is_exit(r, "MAINPATH:") and "DURATION:" in str(r.code), "[required keys] new: every missing key is named in one message")
 
 
-def test_b24_returnlevels():
+def test_returnlevels_string():
     ny = 1000
     old, new = parse("returnlevels", {"RETURNLEVELS": "2,5,10"}, "speclevels", nsimulations=ny)
     ref_old, _ = parse("returnlevels", {"RETURNLEVELS": [2, 5, 10]}, "speclevels", nsimulations=ny)
     al_old, al_new = parse("returnlevels", {"RETURNLEVELS": "2,5,10"}, "alllevels", nsimulations=ny)
     report(is_exit(old, "isn't recognized") and same(new, ref_old) and al_new is False,
-           "B24 RETURNLEVELS '2,5,10': old stops -> new %r %s == JSON [2,5,10]" % (new, getattr(new, "dtype", "")))
+           "[RETURNLEVELS string] RETURNLEVELS '2,5,10': old stops -> new %r %s == JSON [2,5,10]" % (new, getattr(new, "dtype", "")))
     old, new = parse("returnlevels", {"RETURNLEVELS": "2, 5, 166.67, 5000"}, "speclevels", nsimulations=ny)
     ref_old, _ = parse("returnlevels", {"RETURNLEVELS": [2, 5, 166.67, 5000]}, "speclevels", nsimulations=ny)
-    report(same(new, ref_old), "B24 RETURNLEVELS '2, 5, 166.67, 5000' == JSON list (filtered to <= NYEARS): %r" % (new,))
+    report(same(new, ref_old), "[RETURNLEVELS string] RETURNLEVELS '2, 5, 166.67, 5000' == JSON list (filtered to <= NYEARS): %r" % (new,))
     old, new = parse("returnlevels", {"RETURNLEVELS": "2,five"}, "speclevels", nsimulations=ny)
-    report(is_exit(old) and is_exit(new, "isn't recognized"), "B24 RETURNLEVELS '2,five': still stops with the old message")
+    report(is_exit(old) and is_exit(new, "isn't recognized"), "[RETURNLEVELS string] RETURNLEVELS '2,five': still stops with the old message")
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -719,17 +719,17 @@ def test_identical_configs():
 
 
 def main():
-    test_b1_wrap_range()
-    test_b2_single_month()
-    test_b3_string_lists()
-    test_b4_all()
-    test_b5_catinclude()
-    test_b6_single_storm()
-    test_b7_calctype()
-    test_b8_uncertainty()
-    test_b22_required()
-    test_b23_nstorms()
-    test_b24_returnlevels()
+    test_wrap_range()
+    test_single_month()
+    test_string_lists()
+    test_includeyears_all()
+    test_existing_catalog_months()
+    test_excludestorms_string()
+    test_calctype()
+    test_numeric_uncertainty()
+    test_required_keys()
+    test_nstorms_absent()
+    test_returnlevels_string()
     test_identical_configs()
     print()
     print("ALL PASS (%d checks)" % len(RES) if RES and all(RES) else "SOME TESTS FAILED (%d of %d)" % (RES.count(False), len(RES)))

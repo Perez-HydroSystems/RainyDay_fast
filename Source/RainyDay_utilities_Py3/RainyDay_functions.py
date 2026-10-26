@@ -3135,8 +3135,9 @@ def write_frequency_outputs(sortrain, exceedp, returnperiod, FreqFile, figfile, 
     else:
         spreadmin=np.percentile(sortrain,(100-quantilecalc)/2,axis=1)
         spreadmax=np.percentile(sortrain,quantilecalc+(100-quantilecalc)/2,axis=1)
-        # GP 2026-10-26: B8: spreadmean was never set for UNCERTAINTY X (quantile): NameError below at the very end of
-        # the run (also in the original, O:2610). Mean of the realizations, as for 'ensemble' and the pointlist branch.
+        # GP 2026-10-26, numeric UNCERTAINTY: spreadmean was never set for UNCERTAINTY X (quantile): UnboundLocalError
+        # below at the very end of the run (a NameError in the original b14a011, where this code ran at module level).
+        # Mean of the realizations, as for 'ensemble' and the pointlist branch.
         spreadmean=np.nanmean(sortrain,1)
 
     if spreadtype=='ensemble' or spreadtype=='quantile':
