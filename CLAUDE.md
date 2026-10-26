@@ -195,6 +195,10 @@ bit-identical; `"exact"` skips the draws by design (no `np.random` call after th
     fix and identical objects for the paper, Talequah and matrix JSONs.
   - `tools/test_rect_catalog.py`: brute force at every anchor vs the rectangular search.
   - Neither needs data.
+- **Status (2026-10-26):** validation matrix on top of `fast/exact`, variants `fx_off`, `fx_both`, `fx_on_both`,
+  `fx_exact`: `compare_dumps ref ... --catalogs` ALL PASS (80 each); `fx_exact` catalogs bitwise equal to `ref`;
+  `_FreqExact.csv` and RECORDCI files byte-identical to `both`/`on_both`. PNGs: the rendering environment changed during
+  the day (the reference code renders the new PNGs too), so compare PNGs only within one session.
 
 # CLAUDE.md — RainyDay GPU/acceleration testbed
 

@@ -401,8 +401,9 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
   - Without `INCLUDEYEARS`, RainyDay's `nyears` counts storm end years; the exact engine uses it, as RainyDay does.
   - Memory: the RECORDCI pool (durations × storms × locations × 4 bytes), once even when both options are on.
 
-### B9. Bug fixes of 2026-10-26 (GP, branch `fast/fixes`). Status: done and verified; validation matrix pending.
-- **Commits:** pending.
+### B9. Bug fixes of 2026-10-26 (GP, branch `fast/fixes`). Status: done and verified (validation matrix ALL PASS).
+- **Commits:** `e723e81` (the fixes, rebased onto `fast/exact` `74b3c03`), `ed96ce2` (descriptive labels, the
+  original-kernel check), then this status.
 - **Where.** New parsing code is in `Source/RainyDay_utilities_Py3/fast_parse.py`, called from one-line hooks in
   `RainyDay_Py3.py` (marked `GP 2026-10-26`, the replaced code kept as comments). No `np.random` call was added,
   removed or moved.
@@ -410,7 +411,19 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
   `int` vs `np.int32`). `tools/test_parsing.py` checks this against verbatim copies of the old code; the paper's
   configuration and the 5 matrix JSONs parse to identical objects.
 - **Tests** (no data needed): `tools/test_parsing.py` and `tools/test_rect_catalog.py`.
-- **Validation matrix** (5 shapes, production settings, on top of `fast/exact`): pending.
+- **Validation matrix** (5 shapes, production settings; all 20 jobs at `ed96ce2`, on top of `fast/exact`):
+  - `compare_dumps ref fx_off --catalogs`, `ref fx_both --catalogs` (FREQENGINE both) and `ref fx_on_both --catalogs`
+    (RECORDCI + both): ALL PASS, 80 checks each (35 raw-depth dumps bitwise, 35 FreqAnalysis CSVs byte-identical,
+    5 light catalogs bitwise).
+  - `fx_exact` (FREQENGINE exact): 5/5 light catalogs bitwise equal to `ref`; no `_FreqAnalysis.csv`.
+  - `_FreqExact.csv` of `fx_both`, `fx_exact` and `fx_on_both`: 35/35 each byte-identical to B8's `both` run.
+  - RECORDCI files of `fx_on_both` (`_RecordCI`, `_RecordBootstrap`, `_RecordBootstrapLevel`, `_RecordDraws`): 110/110
+    byte-identical to B8's `on_both` run.
+  - `tools/verify_exact_engine.py fx_both`: the per-cell table is byte-identical to B8's `both`.
+  - Unit tests: `test_parsing.py` 72, `test_rect_catalog.py` 19, `test_record_ci.py` 44: ALL PASS.
+  - PNGs are not byte-identical to `ref`, because the rendering changed in the environment: the reference code
+    (`b63865a`) now renders exactly the `fx_off` PNGs again (35/35, from `ref`'s dumps) and none of the PNGs it rendered
+    earlier the same day. Plots of the same data stay comparable only within one rendering environment.
 
 #### B9.1 Rectangular-domain storm catalog search
 - **What.** With `DOMAINTYPE "rectangular"`, the catalog search (`RainyDay_Py3.py`, storm scan) and the
