@@ -58,6 +58,7 @@ import RainyDay_utilities_Py3.RainyDay_functions as RainyDay
 import RainyDay_utilities_Py3.fast_prof as FP        # GP 2026-10-22: RAINYDAY_TIMERS wall-clock timers (no effect on results)
 import RainyDay_utilities_Py3.fast_io as FIO          # GP 2026-10-22: CATALOGSTORAGE "light" (light storm catalog)
 import RainyDay_utilities_Py3.fast_sst as FST        # GP 2026-10-22: MULTIDURATIONENGINE "table" (RainyDay_fast fix 3)
+import RainyDay_utilities_Py3.fast_record as FR      # GP 2026-10-26: RECORDCI, record (sampling) uncertainty (adds outputs only)
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -917,6 +918,12 @@ if isinstance(catalogstride, int):
     if catalogstride>1:
         print("You've decided to speed up the storm catalog identification by not examining every possibility. Good for you!")
         
+# GP 2026-10-26: RECORDCI (optional, default off; RainyDay_fast fast_record.py): record (sampling) uncertainty of the
+# frequency analysis. Parsed and checked here, before the storm catalog is built, so an unsupported run stops early.
+recordopts=FR.parse_options(cardinfo)
+if recordopts is not None:
+    FR.check_options(recordopts,freqanalysis=FreqAnalysis,transpotype=transpotype,samplingtype=samplingtype,calctype=globals().get('calctype'),areatype=areatype,rescaletype=rescaletype,rotation=rotation,intensdistr=userdistr.all()!=False,scenarios=Scenarios,seasonalsampling=seasonalsampling)
+
 #==============================================================================
 # THIS BLOCK CONFIGURES SEVERAL THINGS
 #============================================================================== 
@@ -2213,6 +2220,9 @@ if multidurations is not None:
         if not all(mdkeep):
             sys.exit("MULTIPLEDURATIONS: some catalog storms fall outside INCLUDEYEARS/EXCLUDEMONTHS; a separate CATALOGPATH run would drop them")
     print("MULTIPLEDURATIONS: parent "+RainyDay.durtag(duration)+" h + "+", ".join(RainyDay.durtag(d) for d in subdurs)+" h, engine '"+mdengine+"'")
+# GP 2026-10-26: RECORDCI: not on the duration-rewrite path (catalog longer than DURATION, DURATIONCORRECTION false)
+if recordopts is not None:
+    FR.check_duration(durationcheck,durcorrection)
 
 if FreqAnalysis:
     print("resampling and transposing...")
@@ -2476,6 +2486,16 @@ if FreqAnalysis:
         pass
         
    
+    # GP 2026-10-26: RECORDCI (fast_record.py): the pool of basin-average depths is filled per storm in the loop below
+    # (from a copy of catrain) and the record outputs are written after the FreqAnalysis CSVs; own random generator
+    # (RECORDSEED), no np.random call; anchors = the valid transposition locations (xmask/ymask, or the whole grid).
+    recordci=None
+    if recordopts is not None:
+        recordci=FR.RecordCI(recordopts,durations=[duration]+list(subdurs),steps=[int(duration*60/rainprop.timeres)]+(list(substeps) if len(subdurs)>0 else []),
+                             parent_fullsum=(durcorrection==False),trimmask=trimmask,mnorm=mnorm,timeres=rainprop.timeres,shape=rainprop.subdimensions,
+                             anchors=(ymask,xmask) if domain_type=='irregular' else None,cattime=cattime,includeyears=includeyears,nyears_rd=nyears,
+                             calctype=calctype,nsim=nsimulations,alllevels=alllevels,speclevels=globals().get('speclevels'),folder=fullpath,basename=basescenario)
+
     # here is the main resampling and transposition loop
     FP.tic('resampling: total')                       # GP 2026-10-22: RAINYDAY_TIMERS
     # GP 2026-10-22: RainyDay_fast: the draws of storm i as one index tuple, wsel = np.nonzero(whichstorms==i) (same
@@ -2731,6 +2751,8 @@ if FreqAnalysis:
                 for jd in range(0,len(subdurs)):
                     whichrain_md[jd][mdsel+(0,)]=mdrain[jd]*rainprop.timeres/60./mnorm
         FP.toc('resampling: sub-durations')           # GP 2026-10-22: RAINYDAY_TIMERS
+        if recordci is not None:                      # GP 2026-10-26: RECORDCI pool of this storm (copy of catrain)
+            recordci.add_storm(i,catrain)
     FP.toc('resampling: total')                       # GP 2026-10-22: RAINYDAY_TIMERS
     FST.report()                                      # GP 2026-10-22: "table" engine statistics (prints nothing otherwise)
 
@@ -3162,6 +3184,8 @@ if FreqAnalysis:
         # plt.close('all')
         FP.tic('frequency: write parent + rank/write sub-durations')   # GP 2026-10-22: RAINYDAY_TIMERS
         RainyDay.write_frequency_outputs(sortrain,exceedp,returnperiod,FreqFile,fullpath+'/'+scenarioname+'_FrequencyAnalysis.png',spreadtype,globals().get('quantilecalc'),nrealizations)
+        if recordci is not None:                      # GP 2026-10-26: RECORDCI outputs of the parent duration
+            recordci.write(0,sortrain,exceedp,returnperiod,fullpath,scenarioname,spreadtype,globals().get('quantilecalc'))
 
         # GP 2026-10-21: MULTIPLEDURATIONS: rank and write every shorter duration to MAINPATH/<SCENARIONAME>_<d>/
         for jd in range(0,len(subdurs)):
@@ -3171,7 +3195,11 @@ if FreqAnalysis:
             mdsort,mdexceed,mdrp=RainyDay.rank_frequency(whichrain_md[jd],calctype,nsimulations,alllevels,globals().get('speclevels'))
             RainyDay.write_frequency_outputs(mdsort,mdexceed,mdrp,mdpath+'/'+mdname+'_FreqAnalysis.csv',mdpath+'/'+mdname+'_FrequencyAnalysis.png',spreadtype,globals().get('quantilecalc'),nrealizations)
             print('MULTIPLEDURATIONS: wrote '+mdpath+'/'+mdname+'_FreqAnalysis.csv')
+            if recordci is not None:                  # GP 2026-10-26: RECORDCI outputs of this duration
+                recordci.write(1+jd,mdsort,mdexceed,mdrp,mdpath,mdname,spreadtype,globals().get('quantilecalc'))
         FP.toc('frequency: write parent + rank/write sub-durations')   # GP 2026-10-22: RAINYDAY_TIMERS
+        if recordci is not None:                      # GP 2026-10-26: RECORDCI timings
+            recordci.report()
             
         
     #################################################################################
