@@ -18,6 +18,13 @@ GP 2026-10-26: a run may also be a FREQENGINE "exact" run (_FreqExact.csv, no re
             `mean`, the noise-free value of the realization mean), level (the exact return level `level` of
             _FreqExact.csv in both runs; record part from _RecordBootstrapLevel.csv, written by RECORDCI when FREQENGINE
             is "exact" or "both")
+GP 2026-10-27: --stat median (the line above, old) now works with every engine and has its own record part:
+            Monte Carlo run: the median of the realizations (unchanged); exact run: `q50` of _FreqExact.csv, the exact
+            median of ONE realization's T-yr value X_(k), which the median of the realizations estimates (no Monte Carlo
+            noise). Record part: _RecordBootstrapMedian.csv (`sst_median` = q50 and the per-record medians rec*/drop*,
+            written by RECORDCI with RECORDSAVE "true" since 2026-10-27). Runs made before that file existed fall back
+            to the MEAN's record bootstrap (_RecordBootstrap.csv; an approximation) with a printed WARNING; the output
+            column rec_source says which: median, mean-fallback (--stat median), mean, level.
   An exact statistic has no Monte Carlo noise: its Monte Carlo bootstrap is the constant itself (both runs exact, or
   --stat level: the Monte Carlo part is delta with zero width, and the CI is the record part only). Mixed pairs (Monte
   Carlo vs exact) take the Monte Carlo part from the Monte Carlo run only.
@@ -27,8 +34,9 @@ Per duration x return period (the rows both runs share):
   Monte Carlo part: unpaired bootstrap of the realization statistic of each run (independent runs), --nboot-mc draws,
             np.random.default_rng(seed + d) (the indices of A, then of B: PUBLIC/FIGURES/sst_compare.delta_boot)
   record part: paired bootstrap records of the two runs (same drawn years): delta*_j = 100 (B*_j - A*_j) / A*_j of the
-            noise-free estimates (_RecordBootstrap.csv; --stat level: _RecordBootstrapLevel.csv); deviations
-            delta*_j - delta*_point (jackknife: normal deviations with the jackknife SE of delta)
+            noise-free estimates (_RecordBootstrap.csv; --stat level: _RecordBootstrapLevel.csv; GP 2026-10-27:
+            --stat median: _RecordBootstrapMedian.csv); deviations delta*_j - delta*_point (jackknife: normal deviations
+            with the jackknife SE of delta)
   combined: every Monte Carlo draw plus an independent record deviation (record draw j uniform,
             np.random.default_rng(seed + 1000 + d))
   classes (the paper's rule, margin m, level L = 90 -> alpha = 0.05):
@@ -39,6 +47,7 @@ Per duration x return period (the rows both runs share):
   p-values (bootstrap): p_tost (small = equivalent), p_diff (two-sided minimum-effect, small = |delta| > m), as
             PUBLIC/FIGURES/sst_compare.py; class_mc / p_*_mc: the same with the Monte Carlo part only.
 Output: one CSV row per duration x return period (default ./compare_<A>_vs_<B>.csv), and a class count summary.
+GP 2026-10-27: new columns go at the end (rec_source is the last column), so the existing column positions are unchanged.
 """
 import argparse
 import glob
@@ -164,27 +173,47 @@ def read_result(folder, name, args):
     if os.path.exists(fa):
         has_rlz = any(re.fullmatch(r"rlz\d+", c.strip()) for c in open(fa).readline().split(","))
     if args.stat == "level" or args.engine == "exact" or (args.engine == "auto" and not has_rlz):
-        if args.stat == "median":
-            sys.exit("compare_runs: --stat median is a Monte Carlo statistic (the median of the realizations); %s has "
-                     "no realizations (FREQENGINE 'exact') or --engine exact was given: use --stat mean (the exact "
-                     "mean = the noise-free realization mean) or --stat level (the return level); the median of ONE "
-                     "realization's T-yr value is q50 in _FreqExact.csv" % name)
-        rp, v = read_exact(folder, name, "level" if args.stat == "level" else "mean")
+        # GP 2026-10-27: --stat median of an exact run = q50 of _FreqExact.csv (the exact median of one realization's
+        # T-yr value, which the median of the realizations estimates); the old stop is kept as a comment
+        # if args.stat == "median":
+        #     sys.exit("compare_runs: --stat median is a Monte Carlo statistic (the median of the realizations); %s has "
+        #              "no realizations (FREQENGINE 'exact') or --engine exact was given: use --stat mean (the exact "
+        #              "mean = the noise-free realization mean) or --stat level (the return level); the median of ONE "
+        #              "realization's T-yr value is q50 in _FreqExact.csv" % name)
+        # rp, v = read_exact(folder, name, "level" if args.stat == "level" else "mean")
+        rp, v = read_exact(folder, name, {"level": "level", "median": "q50"}.get(args.stat, "mean"))
         return "exact", rp, v
     rp, r = read_fa(folder, name)
     return "montecarlo", rp, r
 
 
-def read_rec(folder, name, level=False):
+# GP 2026-10-27: the record bootstrap file and its point column of each record statistic
+REC_FILES = {"mean": ("_RecordBootstrap.csv", "sst_expected"), "level": ("_RecordBootstrapLevel.csv", "sst_level"),
+             "median": ("_RecordBootstrapMedian.csv", "sst_median")}
+
+
+def has_rec(folder, name, kind):
+    """GP 2026-10-27: True when the run folder has the record bootstrap file of kind (mean, level, median)."""
+    return os.path.exists(os.path.join(folder, name + REC_FILES[kind][0]))
+
+
+# def read_rec(folder, name, level=False):     # GP 2026-10-27: old line; kind = mean | level | median
+def read_rec(folder, name, kind="mean"):
     # GP 2026-10-26: level=True: _RecordBootstrapLevel.csv (record bootstrap of the return level, --stat level)
-    f = os.path.join(folder, name + ("_RecordBootstrapLevel.csv" if level else "_RecordBootstrap.csv"))
+    # GP 2026-10-27: kind "median": _RecordBootstrapMedian.csv (record bootstrap of the median q50, --stat median)
+    # f = os.path.join(folder, name + ("_RecordBootstrapLevel.csv" if level else "_RecordBootstrap.csv"))
+    level = kind == "level"
+    fname, point = REC_FILES[kind]
+    f = os.path.join(folder, name + fname)
     if not os.path.exists(f):
         sys.exit("compare_runs: missing " + f + " (RECORDCI with RECORDSAVE 'true'" +
                  ("; the level bootstrap is written when FREQENGINE is 'exact' or 'both')" if level else ")"))
     df = pd.read_csv(f, skipinitialspace=True)
     cols = [c for c in df.columns if re.fullmatch(r"(rec|drop)\d+", c)]
+    # return np.round(df["returnperiod"].values.astype(float), 2), \
+    #     df["sst_level" if level else "sst_expected"].values.astype(float), df[cols].values.astype(float), cols
     return np.round(df["returnperiod"].values.astype(float), 2), \
-        df["sst_level" if level else "sst_expected"].values.astype(float), df[cols].values.astype(float), cols
+        df[point].values.astype(float), df[cols].values.astype(float), cols
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -204,6 +233,23 @@ def compare_pair(A, B, args):
     if not common:
         sys.exit("compare_runs: no common durations")
     stat = np.median if args.stat == "median" else np.mean
+    # GP 2026-10-27: the record part of --stat median comes from _RecordBootstrapMedian.csv; when a run lacks it (made
+    # before 2026-10-27), both runs fall back to the mean's bootstrap (the same statistic in both, paired by draw)
+    rec_kind = {}
+    for d in common:
+        if args.stat == "median":
+            both = has_rec(*da[d], "median") and has_rec(*db[d], "median")
+            rec_kind[d] = ("median", "median") if both else ("mean", "mean-fallback")
+        else:
+            rec_kind[d] = ("level", "level") if args.stat == "level" else ("mean", "mean")
+    lack = [(tag, run) for tag, run, dd in (("A", A, da), ("B", B, db))
+            if any(not has_rec(*dd[d], "median") for d in common)] if args.stat == "median" else []
+    if lack:
+        nfb = sum(rec_kind[d][1] == "mean-fallback" for d in common)
+        print("WARNING: compare_runs --stat median: no _RecordBootstrapMedian.csv in %s (a run made before 2026-10-27):"
+              " the record part of %d of %d durations borrows the MEAN's record bootstrap (_RecordBootstrap.csv, an "
+              "approximation); rec_source = mean-fallback"
+              % (" and ".join("run %s %s" % (t, os.path.abspath(r)) for t, r in lack), nfb, len(common)), flush=True)
     L = args.level
     alpha = (100. - L) / 200.
     qe = [100 * alpha, 100 * (1 - alpha)]                 # L % CI (equivalence, TOST at alpha)
@@ -216,8 +262,10 @@ def compare_pair(A, B, args):
         # rpB, rb = read_fa(fB, nB)
         engA, rpA, ra = read_result(fA, nA, args)
         engB, rpB, rb = read_result(fB, nB, args)
-        qA, ptA, recA, cA = read_rec(fA, nA, level=args.stat == "level")
-        qB, ptB, recB, cB = read_rec(fB, nB, level=args.stat == "level")
+        # qA, ptA, recA, cA = read_rec(fA, nA, level=args.stat == "level")    # GP 2026-10-27: old lines
+        # qB, ptB, recB, cB = read_rec(fB, nB, level=args.stat == "level")
+        qA, ptA, recA, cA = read_rec(fA, nA, rec_kind[d][0])
+        qB, ptB, recB, cB = read_rec(fB, nB, rec_kind[d][0])
         if cA != cB:
             sys.exit("compare_runs: %s and %s have different record columns" % (nA, nB))
         for T in [t for t in rpA if t in set(rpB)]:
@@ -265,6 +313,7 @@ def compare_pair(A, B, args):
             r["p_tost_mc"], r["p_diff_mc"] = p_tost(mc, args.margin), p_min_effect(mc, delta, args.margin)
             r["p_tost"], r["p_diff"] = p_tost(comb, args.margin), p_min_effect(comb, delta, args.margin)
             r["engine_a"], r["engine_b"] = engA, engB             # GP 2026-10-26: montecarlo or exact
+            r["rec_source"] = rec_kind[d][1]                      # GP 2026-10-27: moved to the last column (finish)
             r["_le"], r["_ld"] = le, ld
             rows.append(r)
     return rows
@@ -289,6 +338,7 @@ def finish(rows, args):
     df["class"] = [classify(r["delta_pct"], r["comb_ci%s_lo" % le], r["comb_ci%s_hi" % le], r["comb_ci%s_lo" % ld],
                             r["comb_ci%s_hi" % ld], args.margin, alpha, r["q_diff"] if args.bh else None)
                    for _, r in df.iterrows()]
+    df = df[[c for c in df.columns if c != "rec_source"] + ["rec_source"]]     # GP 2026-10-27: last column
     return df
 
 
@@ -297,7 +347,11 @@ def main():
     ap.add_argument("runs", nargs="*", help="RUN_A RUN_B")
     ap.add_argument("--family", help="text file, one 'RUN_A,RUN_B' pair per line (BH with --bh over all rows)")
     # ap.add_argument("--stat", choices=("median", "mean"), default="median")   # GP 2026-10-26: old line
-    ap.add_argument("--stat", choices=("median", "mean", "level"), default="median")
+    # ap.add_argument("--stat", choices=("median", "mean", "level"), default="median")   # GP 2026-10-27: old line
+    ap.add_argument("--stat", choices=("median", "mean", "level"), default="median",
+                    help="median: of the realizations (exact run: q50 of _FreqExact.csv), record part from "
+                         "_RecordBootstrapMedian.csv (older runs: the mean's, with a warning); mean; level "
+                         "(GP 2026-10-27)")
     ap.add_argument("--engine", choices=("auto", "montecarlo", "exact"), default="auto",
                     help="result of each run: auto = realizations if present, else _FreqExact.csv (GP 2026-10-26)")
     ap.add_argument("--margin", type=float, default=5.)

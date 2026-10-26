@@ -28,6 +28,8 @@ random generator, np.random.default_rng(RECORDSEED); the global np.random stream
    year was drawn; lambda* = sum(w)/NY.
 4. Outputs per duration: <name>_RecordBootstrap.csv (every bootstrap record, like "all_realizations"),
    <name>_RecordCI.csv (bands); once per run <scenario>_RecordDraws.csv (the drawn years).
+   GP 2026-10-27: with RECORDSAVE also <name>_RecordBootstrapMedian.csv: the same records for the median q50 of X_(k)
+   (Pool.quantiles at 0.5; sst_median = _FreqExact.csv q50), the record part of compare_runs.py --stat median.
 
 Port of the validated prototype (Basin_IDF_Orientation_Elongation, PUBLIC/ANALYSIS/OUTPUT):
 22_huc_ellipse_diagnostic/scripts/04_correlation_emulator.py (basin_series, dmax, levels) and
@@ -745,8 +747,10 @@ class RecordCI:
     def _mreq(self, ks):
         return m_needed(self.nv, ks, self.NY, self.nsim, self.calctype)
 
-    def estimates(self, j, ks):
-        """Point and record values of duration j: dict of arrays (point: (nT,), bootstrap: (n_draws, nT))."""
+    # def estimates(self, j, ks):                    # GP 2026-10-27: old line; median=False skips md_pt / md_bt
+    def estimates(self, j, ks, median=True):
+        """Point and record values of duration j: dict of arrays (point: (nT,), bootstrap: (n_draws, nT)).
+        GP 2026-10-27: with median=True also md_pt / md_bt, the median q50 of X_(k) (Pool.quantiles)."""
         Ts = self.nsim / ks
         pool = Pool(self.vals[j], self.sgroup, self.NY, self._mreq(ks))
         ones = np.ones((1, self.NY), dtype=np.int64)
@@ -754,6 +758,16 @@ class RecordCI:
                  ex_pt=pool.expected(ones, ks, self.NY, self.nsim, self.calctype)[0])
         r["lv_bt"] = pool.levels(self.C, Ts, self.ny_draw, self.calctype)
         r["ex_bt"] = pool.expected(self.C, ks, self.ny_draw, self.nsim, self.calctype)
+        # GP 2026-10-27: the per-record median q50 of X_(k) (the median of ONE realization's T-yr value; the paper's
+        # median of the realizations estimates it): with all-ones weights it is _FreqExact.csv q50 bitwise (same
+        # Pool.quantiles, same critical count when NY = RainyDay's nyears; the m-th largest pool value does not depend
+        # on the groups or the pool depth), and the same quantile for every bootstrap / jackknife weight row. Computed
+        # after expected: a pool extension here cannot change ex_pt / ex_bt (expected's grid starts at the pool floor).
+        if median:
+            t0 = time.time()
+            r["md_pt"] = pool.quantiles(ones, ks, [0.5], self.NY, self.nsim, self.calctype)[0, :, 0]
+            r["md_bt"] = pool.quantiles(self.C, ks, [0.5], self.ny_draw, self.nsim, self.calctype)[:, :, 0]
+            r["md_seconds"] = time.time() - t0
         r["M"], r["full"], r["extended"] = pool.M, pool.full, pool.extended
         return r
 
@@ -771,7 +785,8 @@ class RecordCI:
         if not np.array_equal(self.exceedp_full[rows], np.asarray(exceedp)):
             sys.exit("RECORDCI: the frequency rows differ from RainyDay's (bug)")
         ks = self.nsim - rows
-        r = self.estimates(j, ks)
+        # r = self.estimates(j, ks)                  # GP 2026-10-27: old line; the median only for its file
+        r = self.estimates(j, ks, median=self.opts["save"])
         self.vals[j] = None                                      # free the pool of this duration
         a = (100. - self.level) / 2.
         q = [a, 100. - a]
@@ -830,6 +845,12 @@ class RecordCI:
                 np.savetxt(os.path.join(folder, name + "_RecordBootstrapLevel.csv"), tab, delimiter=",",
                            header="prob.exceed,returnperiod,sst_level," + ",".join(self.colnames),
                            fmt=["%.6f", "%.4f"] + ["%.4f"] * (tab.shape[1] - 2), comments="")
+            # GP 2026-10-27: the record bootstrap of the median q50 of X_(k) (compare_runs.py --stat median), every
+            # RECORDCI mode (Monte Carlo, exact, both); sst_median = _FreqExact.csv q50 when NY = RainyDay's nyears
+            tab = np.column_stack((exceedp, returnperiod, r["md_pt"], r["md_bt"].T))
+            np.savetxt(os.path.join(folder, name + "_RecordBootstrapMedian.csv"), tab, delimiter=",",
+                       header="prob.exceed,returnperiod,sst_median," + ",".join(self.colnames),
+                       fmt=["%.6f", "%.4f"] + ["%.4f"] * (tab.shape[1] - 2), comments="")
         cols = ["returnperiod", "rd_mean", "sst_expected", "sst_level", "ens_lo", "ens_hi", "rec_lo", "rec_hi", "rec_se",
                 "est_lo", "est_hi", "pred_lo", "pred_hi"]
         tab = np.column_stack((returnperiod, rd_mean, pt, r["lv_pt"], ens_lo, ens_hi, rec_lo, rec_hi, rec_se, est_lo,
@@ -846,6 +867,8 @@ class RecordCI:
                    % (name, returnperiod[jt], rd_mean[jt], pt[jt], self.level, rec_lo[jt], rec_hi[jt],
                       "" if self.method == "bootstrap" else " (jackknife, normal)", np.max(np.abs(rd_mean - pt))))
             msg += "; pool %d values%s, %.1f s" % (r["M"], " (all)" if r["full"] else "", time.time() - t0)
+            if "md_seconds" in r:        # GP 2026-10-27: the median bootstrap (_RecordBootstrapMedian.csv)
+                msg += " (median q50 %.2f s)" % r["md_seconds"]
             print(msg)
             self.seconds_fa += time.time() - t0
             FP.toc("record: estimators + write")
@@ -858,6 +881,8 @@ class RecordCI:
                   np.nanmax(zmc) if np.isfinite(zmc).any() else np.nan,
                   returnperiod[int(np.nanargmax(zmc))] if np.isfinite(zmc).any() else np.nan))
         msg += "; pool %d values%s, %.1f s" % (r["M"], " (all)" if r["full"] else "", time.time() - t0)
+        if "md_seconds" in r:            # GP 2026-10-27: the median bootstrap (_RecordBootstrapMedian.csv)
+            msg += " (median q50 %.2f s)" % r["md_seconds"]
         print(msg)
         if np.isfinite(zmc).any() and np.nanmax(zmc) > 4:
             print("WARNING: RECORDCI %s: rd_mean and sst_expected differ by more than 4 Monte Carlo standard errors "
