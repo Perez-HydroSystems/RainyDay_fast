@@ -171,8 +171,8 @@ FreqAnalysis CSVs. No `np.random` call was added, removed or moved. Any differen
 - `data_aorcfix2` is GP's copy of AORC in RainyDay format with four data defects patched: hour 23:00 UTC, a copy of
   22:00 in 1979–2020 (patched 2002–2020); `AORC.20211231`, which holds the rain of 20211230; the uniform
   22.875 mm/h hour of 2022-05-29 20:00; and the all-missing hour of 2011-07-23 00:00. The patches come from NOAA AORC
-  v1.1 (the 2022 hour: the mean of the neighbouring hours). The patch scripts are not in this repository
-  *(docs review 2026-10-26)*.
+  v1.1 (the 2022 hour: the mean of the neighbouring hours). The patch scripts and step-by-step
+  instructions are in `tools/aorc_fix/` (`AORC_FIX_INSTRUCTIONS.md`; added 2026-11-04).
 - The 5 shapes ran in parallel on the Mac M3 Max, for both RainyDay_mod and RainyDay_fast.
 
 **Validation.** `compare_dumps ref_mod final_all --csv-ref`:

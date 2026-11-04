@@ -34,6 +34,9 @@ Any difference is a bug.
   - runs, catalogs and dumps go in `/Users/gjperezm/Databases/RainyDay_fast_tests/`;
   - crops go in `/Users/gjperezm/Databases/AORC_RainyDay/crops/`.
 
+**Correcting AORC (GP 2026-11-04):** RainyDay-format AORC must be corrected before use (`data_aorcfix2`). Follow
+`tools/aorc_fix/AORC_FIX_INSTRUCTIONS.md` step by step; do not edit the scripts in `tools/aorc_fix/` (md5-checked).
+
 **User's Guide (GP 2026-10-26):** `UserGuide/RainyDay_fast_tutorial.ipynb` (what RainyDay_fast changes, adds and
 fixes; companion to the original `UserGuide/RainyDay_Tutorial.ipynb`). Its code cells only read
 `UserGuide/fast_tutorial_data/` (real run outputs; `MANIFEST.md` has the md5s, settings and commands);

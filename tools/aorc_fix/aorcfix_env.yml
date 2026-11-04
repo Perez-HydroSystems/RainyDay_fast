@@ -1,0 +1,15 @@
+# GP 2026-10-21: small env for make_aorcfix2.py / check_aorcfix2.py only (reads NOAA AORC v1.1 zarr from AWS).
+# RainyDay itself keeps running in RainyDay_Env (it has no zarr/s3fs). Versions = the Mac build of 2026-10-21.
+#   conda env create -f environment/aorcfix_env.yml
+name: aorcfix
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy=2.0.1
+  - pandas=2.2.3
+  - xarray=2024.7.0
+  - zarr=2.18.3
+  - numcodecs=0.13.1
+  - s3fs
+  - netcdf4=1.7.2

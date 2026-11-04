@@ -23,6 +23,9 @@
   [`UserGuide/RainyDay_fast_tutorial.ipynb`](UserGuide/RainyDay_fast_tutorial.ipynb): new and changed control-file
   fields, the features (cropped input, light catalogs, MULTIPLEDURATIONS, the table engine, `RECORDCI`, `FREQENGINE`,
   `compare_runs`), two case studies on real runs, validation, corrected bugs, known issues and the AORC data issues.
+- **Correcting the AORC files:** RainyDay-format AORC has four data defects (23:00 a copy of 22:00 in 2002–2020 and
+  three bad hours or days). [`tools/aorc_fix/AORC_FIX_INSTRUCTIONS.md`](tools/aorc_fix/AORC_FIX_INSTRUCTIONS.md) builds
+  the corrected folder (`data_aorcfix2`) step by step, with the scripts and checks.
 
 ### Using RainyDay_fast for a new domain or dataset (GP 2026-10-22)
 
