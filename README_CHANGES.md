@@ -2,10 +2,8 @@
 
 This file records what RainyDay_fast changes compared with the original RainyDay, and why. It is kept up to date with
 every change. In the code, every change is marked with a `GP YYYY-MM-DD` comment, and the previous code is kept as a
-comment next to it.
-
-**Docs review (GP 2026-10-26).** Sections A–D were checked against the code and the commits while writing the
-RainyDay_fast User's Guide. Statements corrected or added then are marked *(docs review 2026-10-26)*.
+comment next to it. [`README_DETAILED.md`](README_DETAILED.md) describes the same changes by topic for users; this file
+is the complete technical log, with the commits and the validation of each change.
 
 ## Origin
 
@@ -32,7 +30,7 @@ describes the same changes by topic:
 | Changes that affect results | A9, A14, B9 and section C |
 | Other additions | A1, A7, A13, B5 |
 
-**Upstream has moved on** *(docs review 2026-10-26)*. On 2026-10-26 the original repository's `main` was 51 commits
+**Upstream has moved on.** On 2026-10-26 the original repository's `main` was 51 commits
 ahead of `b14a011` (GitHub compare). They include GP's 2025 speed-up (pull request #14) and upstream's own transposition
 fixes (#32 "Storm placement fix", #33 "Fix/catalog anchor normalization", September 2026). RainyDay_fast is not based on
 those commits and has not been compared with them. In this file, "the original RainyDay" always means `b14a011`.
@@ -41,8 +39,7 @@ those commits and has not been compared with them. In this file, "the original R
 exact frequency engine) and makes it fast for large campaigns, meaning thousands of runs over the same rainfall data
 and domains. The speed-ups of section B give results **bit-identical** to the same code without them (commit
 `9137292`). They work in three ways:
-1. it reads each domain from a cropped copy of the input (lossless deflate by default since B4; *docs review
-   2026-10-26*: it said "uncompressed"), instead of decompressing the CONUS files in every run;
+1. it reads each domain from a cropped copy of the input (lossless deflate by default since B4), instead of decompressing the CONUS files in every run;
 2. it keeps the storm catalog as a small metadata file, instead of about 4 GB of rain fields per basin;
 3. it computes the transposition with a per-storm FFT table, plus exact sums only for the candidate windows.
 
@@ -55,21 +52,21 @@ They are listed in section C.
 
 | # | Change | Why | Effect on results vs original | Commit |
 |---|---|---|---|---|
-| A1 | `UNCERTAINTY: "all_realizations"` writes every realization to the FreqAnalysis CSV. `RETURNLEVELS` given as a JSON list, the format of the original User's Guide examples, is now used; the original ignored it and printed every return period *(docs review 2026-10-26)* | Uncertainty analysis needs all realizations; a JSON list of return levels was ignored | New option; the fix changes which rows are printed (the values are unchanged). The comma string `"2,5,10"`, which the original read, stopped the run from `07021dd` until B9.10 | `07021dd` |
-| A2 | A missing time step of a storm window (no file for that day, or no matching time in the file) is filled with zeros, with a message, instead of failing | Datasets with missing days, e.g. leap years | Only when data are missing. A missing **first** file of a storm window still crashes *(docs review 2026-10-26)* | `5185abb` |
-| A3 | Bug fixes: storm-probability plot alignment and storm markers (`645d0cb`, `5185abb`); realization sorting for SCENARIOS (`1e9ea84`: `np.squeeze` of every size-1 axis broke the shapes, e.g. with NREALIZATIONS 1); catalog search range `xlen = W-mw+1`, `ylen = H-mh+1`, so that storms at the domain edge are detected (`0cc1f2c`; debug prints removed in `86d6c70`) | Wrong plots, indices and scenario files; edge storms missed | Not only plots *(docs review 2026-10-26)*: SCENARIOS files change, and `0cc1f2c` changed the catalog search. It changed irregular-domain catalogs until `5536ca0` replaced that search (A14), and it made rectangular catalogs crash for masks 3 or more cells wide or tall (a regression introduced in development, fixed in B9.1) | `645d0cb`, `5185abb`, `1e9ea84`, `0cc1f2c`, `86d6c70` |
-| A4 | Parallel loop in `catalogNumba_irregular` | Speed on large domains | Not none *(docs review 2026-10-26)*: the parallel version scans every anchor instead of the four mirrored quadrants, so catalogs built with the commits of 2025-05-28 → 2026-07-13 could differ from earlier ones. **Superseded:** `catalogNumba_irregular` is no longer called since `5536ca0` (A14) | `2bf6a54` |
-| A5 | **Catalog-scan engines** (`RAINYDAY_CATALOG_ENGINE` or `COMPUTE`): `batchfft` (batched, multithreaded CPU FFT), `batchfft_mp` (process pool), `batchtf` (TensorFlow-Metal GPU), `batchcuda` (CuPy GPU); reader-thread prefetch; benchmark tools. *Docs review 2026-10-26:* the default is not `batchfft`. Since A6 the engine is chosen automatically: `batchfft_mp` when the `fork` start method is available and there are 4 or more cores (macOS, Linux), else `batchcuda` with CuPy and a CUDA device, else `batchfft` | The catalog scan dominated long records | None relative to the per-step FFT search (`fft_perstep`, A14): storm dates, windows, positions and rain fields are bitwise identical; the storm totals (`basinrainfall`, catmax) are compared at rtol 1e-5, because batching changes the summation order (the measured difference was 0 for the CPU engines on Talequah and CONUS). GPU engines screen candidates, then the CPU confirms them exactly. The search itself differs from the original's (A14) *(docs review 2026-10-26)* | `5536ca0` |
-| A6 | Optional JSON `COMPUTE` block (engine, workers, blockfiles, GPU settings), auto-detected from the machine; precedence is env var > JSON > auto. Auto engine: `batchfft_mp` (fork, ≥ 4 cores), else `batchcuda`, else `batchfft` *(docs review 2026-10-26)* | Portable performance settings | None | `df2c909`, `f5ca299` |
+| A1 | `UNCERTAINTY: "all_realizations"` writes every realization to the FreqAnalysis CSV. `RETURNLEVELS` given as a JSON list, the format of the original User's Guide examples, is now used; the original ignored it and printed every return period | Uncertainty analysis needs all realizations; a JSON list of return levels was ignored | New option; the fix changes which rows are printed (the values are unchanged). The comma string `"2,5,10"`, which the original read, stopped the run from `07021dd` until B9.10 | `07021dd` |
+| A2 | A missing time step of a storm window (no file for that day, or no matching time in the file) is filled with zeros, with a message, instead of failing | Datasets with missing days, e.g. leap years | Only when data are missing. A missing **first** file of a storm window still crashes | `5185abb` |
+| A3 | Bug fixes: storm-probability plot alignment and storm markers (`645d0cb`, `5185abb`); realization sorting for SCENARIOS (`1e9ea84`: `np.squeeze` of every size-1 axis broke the shapes, e.g. with NREALIZATIONS 1); catalog search range `xlen = W-mw+1`, `ylen = H-mh+1`, so that storms at the domain edge are detected (`0cc1f2c`; debug prints removed in `86d6c70`) | Wrong plots, indices and scenario files; edge storms missed | Not only plots: SCENARIOS files change, and `0cc1f2c` changed the catalog search. It changed irregular-domain catalogs until `5536ca0` replaced that search (A14), and it made rectangular catalogs crash for masks 3 or more cells wide or tall (a regression introduced in development, fixed in B9.1) | `645d0cb`, `5185abb`, `1e9ea84`, `0cc1f2c`, `86d6c70` |
+| A4 | Parallel loop in `catalogNumba_irregular` | Speed on large domains | Not none: the parallel version scans every anchor instead of the four mirrored quadrants, so catalogs built with the commits of 2025-05-28 → 2026-07-13 could differ from earlier ones. **Superseded:** `catalogNumba_irregular` is no longer called since `5536ca0` (A14) | `2bf6a54` |
+| A5 | **Catalog-scan engines** (`RAINYDAY_CATALOG_ENGINE` or `COMPUTE`): `batchfft` (batched, multithreaded CPU FFT), `batchfft_mp` (process pool), `batchtf` (TensorFlow-Metal GPU), `batchcuda` (CuPy GPU); reader-thread prefetch; benchmark tools. Since A6 the engine is chosen automatically: `batchfft_mp` when the `fork` start method is available and there are 4 or more cores (macOS, Linux), else `batchcuda` with CuPy and a CUDA device, else `batchfft` | The catalog scan dominated long records | None relative to the per-step FFT search (`fft_perstep`, A14): storm dates, windows, positions and rain fields are bitwise identical; the storm totals (`basinrainfall`, catmax) are compared at rtol 1e-5, because batching changes the summation order (the measured difference was 0 for the CPU engines on Talequah and CONUS). GPU engines screen candidates, then the CPU confirms them exactly. The search itself differs from the original's (A14) | `5536ca0` |
+| A6 | Optional JSON `COMPUTE` block (engine, workers, blockfiles, GPU settings), auto-detected from the machine; precedence is env var > JSON > auto. Auto engine: `batchfft_mp` (fork, ≥ 4 cores), else `batchcuda`, else `batchfft` | Portable performance settings | None | `df2c909`, `f5ca299` |
 | A7 | **`CATALOGPATH`**: reuse an existing storm catalog from any folder, with warnings if it was built with different settings | Many durations or settings from one catalog | None | `42bd1e0` |
-| A8 | The temporary hard-coded skip of August 2017 (Hurricane Harvey) in the file list (`createfilelist`), added in `5536ca0`, is commented out; no-Harvey runs now use a data folder without August 2017 | The RainyDay source should not hide data | From `42bd1e0` on, none. **Catalogs built at `5536ca0`–`f5ca299` (2026-07-13 → 2026-10-16) skipped every input file of August 2017, whatever the JSON said** *(docs review 2026-10-26)* | `5536ca0` (added), `42bd1e0` (removed) |
+| A8 | The temporary hard-coded skip of August 2017 (Hurricane Harvey) in the file list (`createfilelist`), added in `5536ca0`, is commented out; no-Harvey runs now use a data folder without August 2017 | The RainyDay source should not hide data | From `42bd1e0` on, none. **Catalogs built at `5536ca0`–`f5ca299` (2026-07-13 → 2026-10-16) skipped every input file of August 2017, whatever the JSON said** | `5536ca0` (added), `42bd1e0` (removed) |
 | A9 | **Strict transposition**: on irregular domains a location is valid only if the **whole watershed bounding box** lies inside the domain, the same rule as the catalog search | The original only required the anchor cell inside the domain, so transposed basins could hang up to about 55 % outside it and collect rain there. In SE Texas this made 100-yr depths grow with basin area (Harvey's core lies on the domain edge) | **Changes results** wherever basins reached the domain edge | `4ae1ace` |
-| A10 | Fix for one-step windows in the batched scan (`build_windowed_block`) | Native 1 h catalogs: unbounded memory, a stalled scan and wrong windows | **A development bug, never in the original** *(docs review 2026-10-26)*: `build_windowed_block` came with `5536ca0`. Native 1 h catalogs (one-step windows) built with a batched engine between 2026-07-13 and 2026-10-20 had wrong windows; 72 h catalogs unchanged | `3453cbc` |
+| A10 | Fix for one-step windows in the batched scan (`build_windowed_block`) | Native 1 h catalogs: unbounded memory, a stalled scan and wrong windows | **A development bug, never in the original**: `build_windowed_block` came with `5536ca0`. Native 1 h catalogs (one-step windows) built with a batched engine between 2026-07-13 and 2026-10-20 had wrong windows; 72 h catalogs unchanged | `3453cbc` |
 | A11 | **`MULTIPLEDURATIONS`** with `MULTIDURATIONENGINE "fast"/"exact"`: one run writes the frequency analysis for several durations (e.g. 1–72 h) from one parent catalog. Each duration equals a separate duration-corrected run. Single duration-corrected runs also use the compiled kernel | One run per basin instead of 7; about 8× faster frequency analysis | None: bit-identical to separate runs | `583d697`, `b6bc42c`, `9137292` |
-| A12 | Smaller fixes:<br>• the storm-writing loop no longer silently swallows non-permission `OSError`s;<br>• `batchfft_mp` uses `fork` because the script has no `__main__` guard;<br>• a stray `from unittest import result` was removed | Silent catalog losses; crashes | *Docs review 2026-10-26:* not none for the write errors (a bug of the original): a run that used to finish with storms silently missing from the catalog, e.g. with a relative path to the JSON, now stops with the error. The other two concern code added in development (`5536ca0`): no effect relative to the original | in `5536ca0` |
-| A13 | Verification tools:<br>• `tools/compare_catalogs.py`;<br>• the Talequah and CONUS reference catalogs (`tools/reference_catalog_fftperstep/`, `tools/conus_catalogs/`): **not in the repository** (`.gitignore`); make your own with the `fft_perstep` engine: `bash tools/run_talequah.sh <env> fft_perstep`, then copy `<MAINPATH>/Talequah_3days/StormCatalog` to `tools/reference_catalog_fftperstep/` *(docs review 2026-10-26)*;<br>• `tools/test_multidurations.sh` and `compare_multidurations.py`;<br>• `tools/test_windowed_block.py` and `test_domainaware_equivalence.py`;<br>• the `RAINYDAY_DUMP_WHICHRAIN` hook, which dumps the raw transposed depths | Proving that changes are exact | None | several |
-| A14 | **Domain-aware catalog search on irregular domains** (`catalogFFT_irregular_domainaware`, "Added by GP Jan-29 2026"): every anchor whose whole basin box lies inside the domain is searched exactly, by FFT, and nothing else; the batched engines (A5) and the duration-rewrite search use the same rule. It replaces the original `catalogNumba_irregular`, which (Iowa domain, one-cell basin) never searched 732 of 35,416 anchors, overwrote 116 more, stored half of its sums (17,284 of 34,568) one cell away from where it computed them, and let the box hang outside the domain with the rain there set to zero *(added in the docs review 2026-10-26)* | One exact rule for the catalog search and for transposition (A9) | **Changes results:** other storms, windows and positions in irregular-domain catalogs; not measured against the original. The code reached it in steps: `5185abb`, `0cc1f2c` (A3) and `2bf6a54` (A4), then `5536ca0` | `5536ca0` |
-| A15 | **Development bug, now gone:** `2bf6a54` also trimmed the north and west edges of the transposition mask (uniform transposition, irregular domain, masks taller or wider than one cell), so a band as tall as the mask (rows) and as wide as the mask (columns) along the north and west edges of the domain array lost its valid locations *(added in the docs review 2026-10-26)* | — | Runs made with the commits of 2025-05-28 to 2026-07-13. Commented out in `5536ca0`; replaced by strict transposition (A9) on 2026-10-16 | `2bf6a54` (added), `5536ca0` (removed) |
+| A12 | Smaller fixes:<br>• the storm-writing loop no longer silently swallows non-permission `OSError`s;<br>• `batchfft_mp` uses `fork` because the script has no `__main__` guard;<br>• a stray `from unittest import result` was removed | Silent catalog losses; crashes | Not none for the write errors (a bug of the original): a run that used to finish with storms silently missing from the catalog, e.g. with a relative path to the JSON, now stops with the error. The other two concern code added in development (`5536ca0`): no effect relative to the original | in `5536ca0` |
+| A13 | Verification tools:<br>• `tools/compare_catalogs.py`;<br>• the Talequah and CONUS reference catalogs (`tools/reference_catalog_fftperstep/`, `tools/conus_catalogs/`): **not in the repository** (`.gitignore`); make your own with the `fft_perstep` engine: `bash tools/run_talequah.sh <env> fft_perstep`, then copy `<MAINPATH>/Talequah_3days/StormCatalog` to `tools/reference_catalog_fftperstep/`;<br>• `tools/test_multidurations.sh` and `compare_multidurations.py`;<br>• `tools/test_windowed_block.py` and `test_domainaware_equivalence.py`;<br>• the `RAINYDAY_DUMP_WHICHRAIN` hook, which dumps the raw transposed depths | Proving that changes are exact | None | several |
+| A14 | **Domain-aware catalog search on irregular domains** (`catalogFFT_irregular_domainaware`, "Added by GP Jan-29 2026"): every anchor whose whole basin box lies inside the domain is searched exactly, by FFT, and nothing else; the batched engines (A5) and the duration-rewrite search use the same rule. It replaces the original `catalogNumba_irregular`, which (Iowa domain, one-cell basin) never searched 732 of 35,416 anchors, overwrote 116 more, stored half of its sums (17,284 of 34,568) one cell away from where it computed them, and let the box hang outside the domain with the rain there set to zero | One exact rule for the catalog search and for transposition (A9) | **Changes results:** other storms, windows and positions in irregular-domain catalogs; not measured against the original. The code reached it in steps: `5185abb`, `0cc1f2c` (A3) and `2bf6a54` (A4), then `5536ca0` | `5536ca0` |
+| A15 | **Development bug, now gone:** `2bf6a54` also trimmed the north and west edges of the transposition mask (uniform transposition, irregular domain, masks taller or wider than one cell), so a band as tall as the mask (rows) and as wide as the mask (columns) along the north and west edges of the domain array lost its valid locations | — | Runs made with the commits of 2025-05-28 to 2026-07-13. Commented out in `5536ca0`; replaced by strict transposition (A9) on 2026-10-16 | `2bf6a54` (added), `5536ca0` (removed) |
 
 ---
 
@@ -80,7 +77,7 @@ these changes (commit `9137292`). That means
 the same catalogs, the same random draws, the same raw transposed depths of every duration, and byte-identical
 FreqAnalysis CSVs. No `np.random` call was added, removed or moved. Any difference is treated as a bug.
 
-### B1. Cropped input per transposition domain (fix 1). Status: done and verified.
+### B1. Cropped input per transposition domain (fix 1)
 - **Tool:**
   ```
   tools/make_domain_crop.py <source folder> <domain.shp> <crop folder> [--years] [--verify] [--watershed ...]
@@ -99,12 +96,12 @@ FreqAnalysis CSVs. No `np.random` call was added, removed or moved. Any differen
 - **Measured (Mac).** Reading a file goes from 78 to 4.6 ms (Iowa, uncompressed crop). The Iowa catalog scan goes from
   11.0 to 2.0 min.
 - **Size, uncompressed:** Iowa 29.4 GB, Texas 16.9 GB for 2002–2023. With `--deflate 1`, the default since B4: Iowa
-  0.76 GB, Texas 0.67 GB *(docs review 2026-10-26)*.
+  0.76 GB, Texas 0.67 GB.
 - **Verified.** Talequah, Iowa pixel and Texas HUC all PASS (catalogs, raw depths and CSVs).
 - **Limits.** `ENHANCEDSST` stochastic or deterministic depends on the file extent, so it is not bit-identical on a
   crop.
 
-### B2. Light storm catalog, `CATALOGSTORAGE: "full" | "light"` (fix 2). Status: done and verified.
+### B2. Light storm catalog, `CATALOGSTORAGE: "full" | "light"` (fix 2)
 - **What is stored.** With `"light"`, the catalog is one small file, `StormCatalog/<CATALOGNAME>_lightcatalog.nc`, of
   about 2 MB. It holds every catalog variable except the rain fields: storm times, locations, depths and masks. It
   also stores the file list and a CRC32 checksum of each storm's rain.
@@ -119,7 +116,7 @@ FreqAnalysis CSVs. No `np.random` call was added, removed or moved. Any differen
   `CATALOGPATH` runs that read a light catalog.
 - **Limits.** `SCENARIOS` needs full catalogs.
 
-### B3. Table transposition engine, `MULTIDURATIONENGINE: "table"` (fix 3). Status: done and verified.
+### B3. Table transposition engine, `MULTIDURATIONENGINE: "table"` (fix 3)
 - **Why.** For each of about 1.8 million random draws (a storm and a location), RainyDay summed the basin's bounding
   box for each of 344 sub-duration windows. That is about 10¹² operations for a 16,000 km² basin.
 - **What the engine does, per storm:**
@@ -137,14 +134,13 @@ FreqAnalysis CSVs. No `np.random` call was added, removed or moved. Any differen
 - **Driver overheads removed** (bit-identical, every engine):
   - `tracemalloc.start()`, inherited from the original RainyDay (2024), is switched off. It was never read, but it
     traced every array allocation, about 620 M per run, and took most of the frequency-analysis time.
-    `RAINYDAY_TRACEMALLOC=1` restores it. It was still on at commit `9137292` *(docs review 2026-10-26)*.
+    `RAINYDAY_TRACEMALLOC=1` restores it. It was still on at commit `9137292`.
   - `StormSelector` builds one index per storm instead of about 10 boolean scans of `whichstorms`.
 - **Verified:** all 5 matrix shapes ALL PASS. With verify mode at 1 %, about 18,000 brute-forced draws per shape had
   0 mismatches.
 - **Speed.** Brute force sums 344 windows per draw (72 h parent; 1, 3, 6, 12, 24 and 48 h). The table engine needs on
   average 1.15–1.72 exact window sums per distinct nonzero location × duration (each distinct location is evaluated
-  once per storm), 35–62× fewer sums than brute force on all the draws (`fast_sst.report()`, matrix logs). *Docs review
-  2026-10-26:* this read "per draw and duration", which mixed the two units.
+  once per storm), 35–62× fewer sums than brute force on all the draws (`fast_sst.report()`, matrix logs).
 - **Frequency-analysis time, `"fast"` → `"table"`:**
 
   | Shape | `"fast"` | `"table"` |
@@ -154,13 +150,12 @@ FreqAnalysis CSVs. No `np.random` call was added, removed or moved. Any differen
   | R10 ellipse | ~9,200 s | 140 s |
   | Texas HUC | 705 s | 37 s |
 
-### B4. Usability for other users, datasets and domains. Status: done and verified.
+### B4. Usability for other users, datasets and domains
 - **`make_domain_crop.py --json RUN.json`.** Takes the data path, variable names, domain and years from the user's
   JSON (any dataset RainyDay reads), and writes a ready-to-run `<stem>_crop.json`.
 - **Compression.** Lossless deflate becomes the default: 25× (Texas) to 39× (Iowa) smaller than `--deflate 0`
   (2002–2023: 0.67 vs 16.9 GB, 0.76 vs 29.4 GB), and still about 13× faster to read than the CONUS files (Iowa, Mac,
-  60 files: about 73 vs 5.5 ms per file). *Docs review 2026-10-26:* this read "about 30× smaller, about 12× faster";
-  the sizes are the crops' and the read times were measured on 2026-10-26.
+  60 files: about 73 vs 5.5 ms per file).
 - **Coverage check at run start.** A crop that does not contain the run's domain stops the run with a clear message.
 - **Portable light catalogs.** The rain is rebuilt from the current run's `RAINPATH`, with the checksum checked per
   storm, so a crop can be moved to another folder or machine.
@@ -188,16 +183,16 @@ FreqAnalysis CSVs. No `np.random` call was added, removed or moved. Any differen
 **Setup.**
 - All three fixes on: cropped input (deflate 1), light catalog, table engine.
 - Production settings: NYEARS 1000, 1–72 h, 10 return levels, `data_aorcfix2`.
-- `data_aorcfix2` is GP's copy of AORC in RainyDay format with four data defects patched: hour 23:00 UTC, a copy of
+- `data_aorcfix2` is the corrected copy of AORC in RainyDay format with four data defects patched: hour 23:00 UTC, a copy of
   22:00 in 1979–2020 (patched 2002–2020); `AORC.20211231`, which holds the rain of 20211230; the uniform
   22.875 mm/h hour of 2022-05-29 20:00; and the all-missing hour of 2011-07-23 00:00. The patches come from NOAA AORC
   v1.1 (the 2022 hour: the mean of the neighbouring hours). The patch scripts and step-by-step
   instructions are in `tools/aorc_fix/` (`AORC_FIX_INSTRUCTIONS.md`; added 2026-11-04).
 - The 5 shapes ran in parallel on the Mac M3 Max, both with commit `9137292` (before the speed-ups) and with the speed-ups on.
 
-**Validation.** `compare_dumps ref_mod final_all --csv-ref`:
+**Validation.** `compare_dumps` of the runs at commit `9137292` against the runs with the speed-ups (`--csv-ref`):
 - ALL PASS, 89 checks: every raw depth of every duration bitwise equal, and every CSV byte-identical. That includes
-  the CSVs of an earlier production campaign.
+  the CSVs of the earlier production runs.
 - `compare_light_catalog`: every storm and variable bitwise equal to the full catalogs of commit `9137292`.
 
 | Shape | Commit 9137292 (before B1–B3) | RainyDay_fast | Speed-up | Catalog size | Peak memory |
@@ -219,7 +214,7 @@ FreqAnalysis CSVs. No `np.random` call was added, removed or moved. Any differen
 
 The next levers are batching several basins per scan, or a GPU scan, plus caching the storms for the diagnostics.
 
-### B7. Record (sampling) uncertainty, `RECORDCI` (GP 2026-10-26). Status: done and verified (branch `fast/record`).
+### B7. Record (sampling) uncertainty, `RECORDCI` (GP 2026-10-26)
 - **Commits:** `2da68ef` (module, hooks, unit tests), `874db70` (`compare_runs.py`, light catalogs in `compare_dumps`),
   `caa319b` (docs).
 - **What.** An optional JSON setting, off by default, that adds the record (sampling) uncertainty of every frequency
@@ -251,10 +246,10 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
 - **Verified** (2026-10-26, Mac M3 Max, RainyDay_Env; outputs under the test root `$FAST_TEST_ROOT` of
   `tools/make_test_jsons.py`):
   - **Bit-identity.** The validation matrix (5 shapes, production settings) was run with main `b63865a` (`ref`), and
-    with this branch with the option off (`off`) and on (`on`: bootstrap, B = 200). `compare_dumps ref off
+    with the option off (`off`) and on (`on`: bootstrap, B = 200). `compare_dumps ref off
     --catalogs` and `compare_dumps ref on --catalogs`: ALL PASS, 80 checks each, 16 per shape (the list of dump files,
     7 raw-depth dumps bitwise, 7 FreqAnalysis CSVs byte-identical, 1 light catalog bitwise with the new light-catalog
-    check; *docs review 2026-10-26*: the list check was missing from the count). All 55 PNGs are byte-identical too.
+    check). All 55 PNGs are byte-identical too.
   - **Unit tests** (`tools/test_record_ci.py`, 28 PASS):
     - the pool equals RainyDay's `SSTalt_multidur` at every anchor of synthetic storms (timeres 60 and 30, fractional
       and 1×1 masks, parent and sub-durations, duration correction): the same zero values, other depths within
@@ -304,7 +299,7 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
     (unit test against the exact step-function integral), far below the Monte Carlo error.
   - Memory: durations × storms × locations × 4 bytes (Iowa pixel, 7 × 400 × 35,416: 378 MB).
 
-### B8. Exact frequency engine, `FREQENGINE` (GP 2026-10-26). Status: done and verified (branch `fast/exact`).
+### B8. Exact frequency engine, `FREQENGINE` (GP 2026-10-26)
 - **Commit:** `e859896` (module, driver hooks, tools, unit tests, docs).
 - **What.** An optional JSON setting: `"montecarlo"` (default, unchanged), `"exact"` or `"both"`.
   - The exact engine computes the frequency analysis of RainyDay's SST model from the complete storm × location pool,
@@ -353,14 +348,13 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
 - **Verified** (2026-10-26, Mac M3 Max, RainyDay_Env; outputs under the test root `$FAST_TEST_ROOT` of
   `tools/make_test_jsons.py`, and the `runs/` and `compare/` folders below are relative to it):
   - **Bit-identity**, validation matrix (5 shapes, production settings), `ref` = main `b63865a`:
-    - `compare_dumps ref off2 --catalogs` (this branch, option absent) and `ref both --catalogs`: ALL PASS, 80 checks
-      each, 16 per shape (the list of dump files, 7 raw-depth dumps, 7 FreqAnalysis CSVs, 1 light catalog;
-      *docs review 2026-10-26*);
+    - `compare_dumps ref off2 --catalogs` (option absent) and `ref both --catalogs`: ALL PASS, 80 checks
+      each, 16 per shape (the list of dump files, 7 raw-depth dumps, 7 FreqAnalysis CSVs, 1 light catalog);
     - all 55 PNGs of `both` byte-identical to `ref`.
     - With RECORDCI (B = 200), variants `on2` (Monte Carlo), `on_both` and `on_exact`:
       - `compare_dumps ref on2|on_both --catalogs` ALL PASS;
-      - `_RecordCI.csv` and `_RecordBootstrap.csv` of `on2` and `on_both` byte-identical (35/35) to `fast/record`'s
-        `on` (the StormPool refactor changes nothing);
+      - `_RecordCI.csv` and `_RecordBootstrap.csv` of `on2` and `on_both` byte-identical (35/35) to the `on`
+        runs of B7 (the StormPool refactor changes nothing);
       - `_RecordBootstrap.csv` and `_RecordBootstrapLevel.csv` of `on_exact` byte-identical to `on_both`.
   - **`"exact"`:**
     - 5/5 light catalogs bitwise equal to `ref` (`compare_dumps.compare_light_catalogs`);
@@ -444,9 +438,9 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
   - Without `INCLUDEYEARS`, RainyDay's `nyears` counts storm end years; the exact engine uses it, as RainyDay does.
   - Memory: the RECORDCI pool (durations × storms × locations × 4 bytes), once even when both options are on.
 
-### B9. Bug fixes of 2026-10-26 (GP, branch `fast/fixes`). Status: done and verified (validation matrix ALL PASS).
-- **Commits:** `e723e81` (the fixes, rebased onto `fast/exact` `74b3c03`), `ed96ce2` (descriptive labels, the
-  original-kernel check), then `7ab20cf` (this status).
+### B9. Bug fixes of 2026-10-26 (GP)
+- **Commits:** `e723e81` (the fixes, on top of `74b3c03`), `ed96ce2` (descriptive labels, the
+  original-kernel check), then `7ab20cf`.
 - **Where.** New parsing code is in `Source/RainyDay_utilities_Py3/fast_parse.py`, called from one-line hooks in
   `RainyDay_Py3.py` (marked `GP 2026-10-26`, the replaced code kept as comments). No `np.random` call was added,
   removed or moved.
@@ -454,10 +448,10 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
   `int` vs `np.int32`). `tools/test_parsing.py` checks this against verbatim copies of the old code; the production
   configuration and the 5 matrix JSONs parse to identical objects.
 - **Tests** (no data needed): `tools/test_parsing.py` and `tools/test_rect_catalog.py`.
-- **Validation matrix** (5 shapes, production settings; all 20 jobs at `ed96ce2`, on top of `fast/exact`):
+- **Validation matrix** (5 shapes, production settings; all 20 jobs at `ed96ce2`):
   - `compare_dumps ref fx_off --catalogs`, `ref fx_both --catalogs` (FREQENGINE both) and `ref fx_on_both --catalogs`
     (RECORDCI + both): ALL PASS, 80 checks each, 16 per shape (the list of dump files, 7 raw-depth dumps bitwise,
-    7 FreqAnalysis CSVs byte-identical, 1 light catalog bitwise; *docs review 2026-10-26*).
+    7 FreqAnalysis CSVs byte-identical, 1 light catalog bitwise).
   - `fx_exact` (FREQENGINE exact): 5/5 light catalogs bitwise equal to `ref`; no `_FreqAnalysis.csv`.
   - `_FreqExact.csv` of `fx_both`, `fx_exact` and `fx_on_both`: 35/35 each byte-identical to B8's `both` run.
   - RECORDCI files of `fx_on_both` (`_RecordCI`, `_RecordBootstrap`, `_RecordBootstrapLevel`, `_RecordDraws`): 110/110
@@ -635,7 +629,7 @@ The next levers are batching several basins per scan, or a GPU scan, plus cachin
 key matching that still surrounds the `UNCERTAINTY` and `RETURNLEVELS` hooks, and the duration-rewrite path (B9.1,
 Limits).
 
-### B10. Per-record median bootstrap, `_RecordBootstrapMedian.csv` (GP 2026-10-27). Status: done and verified (branch `fast/median`).
+### B10. Per-record median bootstrap, `_RecordBootstrapMedian.csv` (GP 2026-10-27)
 - **Commits:** `4fe10a0` (module, `compare_runs.py`, unit tests), then the docs commit (this entry, README,
   User's Guide).
 - **What.**
@@ -667,7 +661,7 @@ Limits).
   - `RecordCI.write` computes them only when RECORDSAVE is true and writes the file next to `_RecordBootstrap.csv`.
     The per-duration RECORDCI log line ends with `(median q50 X s)`.
 - **Effect on results.** None: one file is added. No `np.random` call was added, removed or moved.
-- **Verified** (2026-10-26, Mac M3 Max, RainyDay_Env; runs from the `fast/median` working tree with the source of
+- **Verified** (2026-10-26, Mac M3 Max, RainyDay_Env; runs with the source of
   `4fe10a0`; outputs under `$FAST_TEST_ROOT`):
   - **Unit tests:**
 
@@ -737,14 +731,13 @@ Limits).
 ## C. Which changes alter results relative to the original RainyDay
 - **Change results:**
   - A9, strict transposition, wherever basins reached the domain edge;
-  - A14, the domain-aware catalog search: every irregular-domain catalog can hold other storms, windows and positions
-    *(docs review 2026-10-26: this was missing)*;
+  - A14, the domain-aware catalog search: every irregular-domain catalog can hold other storms, windows and positions;
   - A1, which rows are printed when `RETURNLEVELS` is a JSON list (the values are unchanged);
   - A2, only when input data are missing;
   - A3, SCENARIOS files when a dimension has size 1;
   - A12, runs whose catalog silently lost storms (they now stop with the error);
   - B9, for the configurations in the table below.
-- **Development bugs, never in the original** *(docs review 2026-10-26; A10 was listed above as a change of results)*.
+- **Development bugs, never in the original**.
   They matter only for runs made with the commits listed, while they were present:
   - A10, native 1 h catalogs built with a batched engine, 2026-07-13 → 2026-10-20;
   - A8, August 2017 skipped in every catalog built at `5536ca0`–`f5ca299`, 2026-07-13 → 2026-10-16;
@@ -752,7 +745,7 @@ Limits).
   - A3/B9.1, rectangular catalogs crashed for masks 3 or more cells wide or tall, 2025-05-20 → 2026-10-26.
 - **Identical by construction and verified:**
   - all catalog engines (A5) relative to `fft_perstep`: storm dates, windows, positions and rain fields bitwise, storm
-    totals at rtol 1e-5 *(docs review 2026-10-26)*;
+    totals at rtol 1e-5;
   - `MULTIPLEDURATIONS` (A11);
   - everything in section B, which is bit-identical to the code at commit `9137292`.
 - **Adds outputs only:** `RECORDCI` (B7) writes new files next to the frequency analysis; with it off or on, every
@@ -783,21 +776,19 @@ Limits).
 
 ## D. New settings reference
 
-Rows marked † were added in the docs review (2026-10-26).
-
 | Setting | Where | Values | Default |
 |---|---|---|---|
 | `UNCERTAINTY` | JSON | adds `"all_realizations"`; a number *X* (JSON `90` or `"90"`) gives the (100 − *X*)/2 and 100 − (100 − *X*)/2 percentiles (B9.7) | original options |
-| `RETURNLEVELS` † | JSON | a JSON list (A1), a comma string `"2,5,10"` (B9.10) or `"all"` | `"all"` |
-| `DIAGNOSTICPLOTS` † | JSON | adds `"only-statistics"`: the catalog statistics maps without the per-storm maps and hyetographs (`5185abb`) | original options |
-| `EXCLUDEMONTHS` † | JSON | adds ranges across the new year (`"12-3"`), a single month (`"8"`) and lists of numeric strings (B9.2) | none excluded |
-| `INCLUDEYEARS` † | JSON | `"all"`, `"none"` and `""` mean all years; lists of numeric strings (B9.3) | all years |
-| `EXCLUDESTORMS` † | JSON | adds a single storm number (`"17"`, B9.5) | none excluded |
+| `RETURNLEVELS` | JSON | a JSON list (A1), a comma string `"2,5,10"` (B9.10) or `"all"` | `"all"` |
+| `DIAGNOSTICPLOTS` | JSON | adds `"only-statistics"`: the catalog statistics maps without the per-storm maps and hyetographs (`5185abb`) | original options |
+| `EXCLUDEMONTHS` | JSON | adds ranges across the new year (`"12-3"`), a single month (`"8"`) and lists of numeric strings (B9.2) | none excluded |
+| `INCLUDEYEARS` | JSON | `"all"`, `"none"` and `""` mean all years; lists of numeric strings (B9.3) | all years |
+| `EXCLUDESTORMS` | JSON | adds a single storm number (`"17"`, B9.5) | none excluded |
 | `CATALOGPATH` | JSON | `<folder>/StormCatalog/<CATALOGNAME>` | none |
 | `MULTIPLEDURATIONS` | JSON | list of durations in hours, each ≤ `DURATION` | none |
 | `MULTIDURATIONENGINE` | JSON | `"fast"`, `"exact"`, `"table"` (B3) | `"fast"` |
 | `CATALOGSTORAGE` | JSON | `"full"`, `"light"` (B2) | `"full"` |
-| `COMPUTE` | JSON block | subkeys † `engine` (`auto` or an engine name, case-sensitive), `nworkers`, `blockfiles`, `gpu_chunk` (each `auto` or an integer), `gpu_delta` (number), `prefetch` (`auto` or an integer); keys starting with `_` are ignored. Irregular domains only | every subkey `"auto"`; `gpu_delta` 1e-3 |
+| `COMPUTE` | JSON block | subkeys `engine` (`auto` or an engine name, case-sensitive), `nworkers`, `blockfiles`, `gpu_chunk` (each `auto` or an integer), `gpu_delta` (number), `prefetch` (`auto` or an integer); keys starting with `_` are ignored. Irregular domains only | every subkey `"auto"`; `gpu_delta` 1e-3 |
 | `RECORDCI` | JSON | `"false"`, `"bootstrap"`, `"jackknife"` (B7; JSON booleans accepted) | `"false"` |
 | `RECORDNBOOT` | JSON | number of bootstrap records | 1000 |
 | `RECORDLEVEL` | JSON | level of the bands (%) | 90 |
@@ -806,20 +797,20 @@ Rows marked † were added in the docs review (2026-10-26).
 | `RECORDSAVE` | JSON | `"true"`: also `_RecordBootstrap.csv`, `_RecordBootstrapMedian.csv` (B10), `_RecordDraws.csv` (and `_RecordBootstrapLevel.csv` with FREQENGINE on); `"false"`: `_RecordCI.csv` only | `"true"` |
 | `FREQENGINE` | JSON | `"montecarlo"`, `"exact"` (no realizations, no draws), `"both"` (B8) | `"montecarlo"` |
 | `RAINYDAY_DUMP_EXACTPOOL` | env | folder for the exact engine's pool of every duration (`<name>_exactpool.npz`, for `tools/verify_exact_engine.py`; B8) | off |
-| `RAINYDAY_CATALOG_ENGINE` | env | `batchfft`, `batchfft_mp`, `fft_perstep`, `batchtf`, `batchcuda` | auto: `batchfft_mp` with `fork` and ≥ 4 cores, else `batchcuda` with CuPy and a CUDA device, else `batchfft` † (it read "auto (`batchfft`)") |
+| `RAINYDAY_CATALOG_ENGINE` | env | `batchfft`, `batchfft_mp`, `fft_perstep`, `batchtf`, `batchcuda` | auto: `batchfft_mp` with `fork` and ≥ 4 cores, else `batchcuda` with CuPy and a CUDA device, else `batchfft` |
 | `RAINYDAY_BLOCKFILES` | env | files per FFT batch | 16 / auto |
-| `RAINYDAY_NWORKERS` † | env | `batchfft_mp` worker processes | auto: min(max(1, cores − 2), 8), fewer if 60 % of the free RAM is not enough |
-| `RAINYDAY_GPU_CHUNK` † | env | `batchcuda` time steps per GPU FFT | auto: from the free GPU memory, 8–256; 64 if unknown |
-| `RAINYDAY_GPU_DELTA` † | env | tolerance of the GPU screen (`batchtf`, `batchcuda`) | 1e-3 |
-| `RAINYDAY_SCAN_PREFETCH` † | env | blocks read ahead by a reader thread | 2 for `batchcuda`, else 0 |
-| `CUPY_ACCELERATORS` † | env | set to `''` by the code (`setdefault`) before CuPy is imported, so reductions use NVRTC; set it yourself if CuPy is imported earlier | `''` |
-| `RAINYDAY_DUMP_SCANINPUTS` † | env | `.pkl` path: pickle the catalog-scan inputs and exit (for `tools/bench_mp_scan.py`, `profile_scan.py`, `bench_prefetch.py`) | off |
+| `RAINYDAY_NWORKERS` | env | `batchfft_mp` worker processes | auto: min(max(1, cores − 2), 8), fewer if 60 % of the free RAM is not enough |
+| `RAINYDAY_GPU_CHUNK` | env | `batchcuda` time steps per GPU FFT | auto: from the free GPU memory, 8–256; 64 if unknown |
+| `RAINYDAY_GPU_DELTA` | env | tolerance of the GPU screen (`batchtf`, `batchcuda`) | 1e-3 |
+| `RAINYDAY_SCAN_PREFETCH` | env | blocks read ahead by a reader thread | 2 for `batchcuda`, else 0 |
+| `CUPY_ACCELERATORS` | env | set to `''` by the code (`setdefault`) before CuPy is imported, so reductions use NVRTC; set it yourself if CuPy is imported earlier | `''` |
+| `RAINYDAY_DUMP_SCANINPUTS` | env | `.pkl` path: pickle the catalog-scan inputs and exit (for `tools/bench_mp_scan.py`, `profile_scan.py`, `bench_prefetch.py`) | off |
 | `RAINYDAY_DUMP_WHICHRAIN` | env | folder for the raw transposed depths | off |
 | `RAINYDAY_TIMERS` | env | `1` prints timers | off |
-| `RAINYDAY_TRACEMALLOC` † | env | `1` turns `tracemalloc` back on (B3) | off |
+| `RAINYDAY_TRACEMALLOC` | env | `1` turns `tracemalloc` back on (B3) | off |
 | `RAINYDAY_VERIFY_TABLE` | env | fraction of draws brute-forced (B3) | off |
-| `RAINYDAY_VERIFY_SEED` † | env | seed of the verify-mode sample (`default_rng`, B3) | 20261022 |
-| `RAINYDAY_TABLE_WORKERS` † | env | `scipy.fft` workers of the table engine (B3) | 1 |
+| `RAINYDAY_VERIFY_SEED` | env | seed of the verify-mode sample (`default_rng`, B3) | 20261022 |
+| `RAINYDAY_TABLE_WORKERS` | env | `scipy.fft` workers of the table engine (B3) | 1 |
 
 More detail: `README_DETAILED.md` (usage), the User's Guide (validation and benchmarks) and the `GP` comments in
 the code.
