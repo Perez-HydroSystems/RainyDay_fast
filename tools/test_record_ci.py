@@ -197,7 +197,7 @@ def test_levels():
 
 
 class ProtoPool:
-    """Verbatim copy of record_boot.Pool (24_record_uncertainty/scripts/record_boot.py, GP 2026-10-26), the reference
+    """Verbatim copy of record_boot.Pool (the research prototype, GP 2026-10-26), the reference
     of the port (storm weights; np.trapz as the prototype)."""
 
     def __init__(self, vals, m_needed, factor=4.0):

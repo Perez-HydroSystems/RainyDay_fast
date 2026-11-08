@@ -5,8 +5,8 @@ Test case: `Examples/Talequah/Talequah.json` — irregular domain (180×180 grid
 hourly). Machine: Apple M3 Max (16 cores). All runs verified with
 `tools/compare_catalogs.py` against `tools/reference_catalog_fftperstep/`
 (regenerated baseline, RainyDay_Env). That folder and `tools/conus_catalogs/` are not in the
-repository (`.gitignore`); regenerate them with the `fft_perstep` engine, see CLAUDE.md
-"Verification harness" (GP 2026-10-26, docs review).
+repository (`.gitignore`); regenerate them with the `fft_perstep` engine (`bash tools/run_talequah.sh <env> fft_perstep`,
+then copy `<MAINPATH>/Talequah_3days/StormCatalog` there; GP 2026-10-26, docs review).
 
 - **catalog scan timer** = the file-scanning part that the engines accelerate.
   This is the part that grows linearly with record length — the 20-year cost driver.

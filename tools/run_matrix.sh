@@ -2,12 +2,12 @@
 # GP 2026-10-22: run the validation matrix JSONs of one variant in parallel (one job per shape), with whichrain dumps,
 # wall time and peak memory.
 #   bash tools/run_matrix.sh <repo_dir> <variant> [name ...]
-#   <repo_dir>  RainyDay repo whose Source/RainyDay_Py3.py runs (RainyDay_mod for references, RainyDay_fast otherwise)
+#   <repo_dir>  RainyDay repo whose Source/RainyDay_Py3.py runs (e.g. a checkout of commit 9137292 for references)
 #   <variant>   JSON folder $FAST_TEST_ROOT/jsons/<variant>/ (tools/make_test_jsons.py)
 # env: PY (default RainyDay_Env python), FAST_TEST_ROOT, any RAINYDAY_* variable (passed through)
 # Out: dumps/<variant>/<name>/*_whichrain.npy, logs/<variant>/<name>.log, logs/<variant>/summary.tsv
 REPO="$1"; VAR="$2"; shift 2
-ROOT="${FAST_TEST_ROOT:-/Users/gjperezm/Databases/RainyDay_fast_tests}"
+ROOT="${FAST_TEST_ROOT:-$HOME/Databases/RainyDay_fast_tests}"
 PY="${PY:-/opt/anaconda3/envs/RainyDay_Env/bin/python}"
 NAMES="$*"; [ -n "$NAMES" ] || NAMES=$(cd "$ROOT/jsons/$VAR" && ls *.json | sed 's/\.json$//')
 mkdir -p "$ROOT/logs/$VAR"

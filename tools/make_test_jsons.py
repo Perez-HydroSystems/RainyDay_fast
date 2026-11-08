@@ -4,13 +4,13 @@ GP 2026-10-22: JSONs of the RainyDay_fast validation matrix (production settings
     python tools/make_test_jsons.py <variant> [--rainpath SET=DIR ...] [--catalog-from VARIANT] [--set KEY=VALUE ...]
                                     [--only NAME ...]
 
-Writes $FAST_TEST_ROOT/jsons/<variant>/<name>.json (default root /Users/gjperezm/Databases/RainyDay_fast_tests) for:
+Writes $FAST_TEST_ROOT/jsons/<variant>/<name>.json (default root ~/Databases/RainyDay_fast_tests) for:
   Talequah    Talequah                          (smoke test: 2002 Jul-Sep, 10 storms, NYEARS 100, 5 realizations)
   Iowa        Pixel_r1_A1km2_rot0               (1 cell)
   Iowa        Circular_r1_A16000km2_rot0        (largest basin)
   Iowa        Elliptical_r10_A16000km2_rot45    (bounding box much larger than the mask)
   HUC_Texas   Basin_raw_Texas_HUC_120401020101  (Texas domain, HUC basin)
-Templates: the campaign JSONs in $FAST_KIT_JSON (default: the Ubuntu kit inputs/json_md_mac, Mac paths) and
+Templates: the campaign JSONs in $FAST_KIT_JSON (a folder of production JSONs; required for Iowa and HUC_Texas) and
 Examples/Talequah/Talequah.json (shapefiles taken from this repo).
   MAINPATH      -> $FAST_TEST_ROOT/runs/<variant>/<set>
   --rainpath    -> RAINPATH = DIR/AORC.*.preciptemp.nc for that set (default: the template's data_aorcfix2)
@@ -23,10 +23,8 @@ import os
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-ROOT = Path(os.environ.get("FAST_TEST_ROOT", "/Users/gjperezm/Databases/RainyDay_fast_tests"))
-KIT = Path(os.environ.get("FAST_KIT_JSON", "/Users/gjperezm/Library/CloudStorage/OneDrive-OklahomaAandMSystem/Academia/"
-                          "Codes/Basin_IDF_Orientation_Elongation/PUBLIC/ANALYSIS/OUTPUT/5/json/new_rainyday/"
-                          "ubuntu_kit/inputs/json_md_mac"))
+ROOT = Path(os.environ.get("FAST_TEST_ROOT", str(Path.home() / "Databases" / "RainyDay_fast_tests")))
+KIT = Path(os.environ.get("FAST_KIT_JSON", str(Path.home() / "RainyDay_fast_kit_json")))
 SHAPES = [("Talequah", "Talequah"),
           ("Iowa", "Pixel_r1_A1km2_rot0"),
           ("Iowa", "Circular_r1_A16000km2_rot0"),
@@ -40,7 +38,7 @@ def talequah():
     shp = REPO / "Examples" / "Talequah" / "Shapefiles"
     b.update(SCENARIONAME="Talequah", CATALOGNAME="Talequah.nc",
              DOMAINSHP=str(shp / "Talequah_transposition_domain.shp"), WATERSHEDSHP=str(shp / "Talequah_basin.shp"),
-             RAINPATH="/Users/gjperezm/Databases/AORC_RainyDay/data_aorcfix2/AORC.*.preciptemp.nc",
+             RAINPATH=str(Path.home() / "Databases" / "AORC_RainyDay" / "data_aorcfix2" / "AORC.*.preciptemp.nc"),
              FREQANALYSIS="true", DIAGNOSTICPLOTS="only-statistics", NYEARS=100, NREALIZATIONS=5,
              UNCERTAINTY="all_realizations", RETURNLEVELS=[2, 5, 10, 25, 50, 100], SCENARIOS="false",
              DURATIONCORRECTION="false", DURATION=72, MULTIPLEDURATIONS=DURS, MULTIDURATIONENGINE="fast")

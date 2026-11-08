@@ -20,3 +20,8 @@ tools/logs/
 # Kept out of the repo to stay lean.
 tools/conus_catalogs/
 tools/reference_catalog_fftperstep/
+
+# Local notes and IDE files (not part of the public repository)
+CLAUDE.md
+.idea/
+*.iml

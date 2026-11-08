@@ -1,1 +1,1 @@
-python '/Users/gjperezm/Library/CloudStorage/OneDrive-OklahomaAandMSystem/Academia/Codes/RainyDay_SST/RainyDay/Source/RainyDay_Py3.py' '/Users/gjperezm/Library/CloudStorage/OneDrive-OklahomaAandMSystem/Academia/Codes/RainyDay_SST/Testing_RainyDay_GPU/RainyDay/Examples/Talequah/Talequah.json'
+python /path/to/RainyDay_fast/Source/RainyDay_Py3.py /path/to/RainyDay_fast/Examples/Talequah/Talequah.json

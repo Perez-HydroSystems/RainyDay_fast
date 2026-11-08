@@ -12,7 +12,7 @@
   "CALCTYPE": "pds",
   "TIMESEPARATION": 24,
   "DOMAINTYPE": "irregular",
-  "DOMAINSHP": "C:/Users/gpere11/OneDrive - Oklahoma A and M System/Academia/Codes/RainyDay_SST/Testing_RainyDay_GPU/RainyDay/Examples/Talequah/Shapefiles/Talequah_transposition_domain.shp",
+  "DOMAINSHP": "C:/path/to/RainyDay_fast/Examples/Talequah/Shapefiles/Talequah_transposition_domain.shp",
   "DIAGNOSTICPLOTS": "true",
   "FREQANALYSIS": "false",
   "NREALIZATIONS": 20,
@@ -44,7 +44,7 @@
   "RETURNTHRESHOLD": 2,
   "SCENARIOS": "false",
   "POINTAREA": "watershed",
-  "WATERSHEDSHP": "C:/Users/gpere11/OneDrive - Oklahoma A and M System/Academia/Codes/RainyDay_SST/Testing_RainyDay_GPU/RainyDay/Examples/Talequah/Shapefiles/Talequah_basin.shp",
+  "WATERSHEDSHP": "C:/path/to/RainyDay_fast/Examples/Talequah/Shapefiles/Talequah_basin.shp",
   "VARIABLES": {
     "precip": "RAINRATE",
     "latname": "latitude",

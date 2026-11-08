@@ -6,7 +6,7 @@ PASS  C3b other hours and TMP byte-identical to the source  []
 PASS  C4a 2021-12-31 != 2021-12-30 and == v1.1  max |diff| vs v1.1 0.0031
 PASS  C4b 2011-07-23 00:00 not all missing  valid fraction 0.641
 PASS  C4c 2022-05-29 20:00 not uniform  std 0.422
-C5 manifest: 6942 patched files -> /Users/gjperezm/Databases/AORC_RainyDay/data_aorcfix2/_aorcfix2_manifest.tsv
+C5 manifest: 6942 patched files -> /path/to/AORC_RainyDay/data_aorcfix2/_aorcfix2_manifest.tsv
 ALL PASS
 real 791.70
 user 526.23

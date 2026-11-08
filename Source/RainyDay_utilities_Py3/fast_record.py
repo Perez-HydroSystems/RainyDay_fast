@@ -31,10 +31,8 @@ random generator, np.random.default_rng(RECORDSEED); the global np.random stream
    GP 2026-10-27: with RECORDSAVE also <name>_RecordBootstrapMedian.csv: the same records for the median q50 of X_(k)
    (Pool.quantiles at 0.5; sst_median = _FreqExact.csv q50), the record part of compare_runs.py --stat median.
 
-Port of the validated prototype (Basin_IDF_Orientation_Elongation, PUBLIC/ANALYSIS/OUTPUT):
-22_huc_ellipse_diagnostic/scripts/04_correlation_emulator.py (basin_series, dmax, levels) and
-24_record_uncertainty/scripts/record_boot.py (Pool, year_draws, storm_weights, loyo_weights, m_needed). Validation:
-22 leave-one-year-out RainyDay runs of the Iowa pixel, median difference -0.17 % (24_record_uncertainty/REPORT.md).
+Port of a validated research prototype (basin_series, dmax, levels, Pool, year_draws, storm_weights, loyo_weights,
+m_needed). Validation: 22 leave-one-year-out RainyDay runs of an Iowa pixel, median difference -0.17 %.
 
 GP 2026-10-26: exact frequency engine, JSON "FREQENGINE" = "montecarlo" (default) | "exact" | "both" (class ExactFA).
 From the same pool (StormPool, shared with RECORDCI: one copy), the frequency analysis of the SST model RainyDay samples,
@@ -758,7 +756,7 @@ class RecordCI:
                  ex_pt=pool.expected(ones, ks, self.NY, self.nsim, self.calctype)[0])
         r["lv_bt"] = pool.levels(self.C, Ts, self.ny_draw, self.calctype)
         r["ex_bt"] = pool.expected(self.C, ks, self.ny_draw, self.nsim, self.calctype)
-        # GP 2026-10-27: the per-record median q50 of X_(k) (the median of ONE realization's T-yr value; the paper's
+        # GP 2026-10-27: the per-record median q50 of X_(k) (the median of ONE realization's T-yr value; the
         # median of the realizations estimates it): with all-ones weights it is _FreqExact.csv q50 bitwise (same
         # Pool.quantiles, same critical count when NY = RainyDay's nyears; the m-th largest pool value does not depend
         # on the groups or the pool depth), and the same quantile for every bootstrap / jackknife weight row. Computed

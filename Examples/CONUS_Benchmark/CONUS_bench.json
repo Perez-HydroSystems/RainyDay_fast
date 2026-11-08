@@ -1,7 +1,7 @@
 {
-    "MAINPATH": "/Users/gjperezm/Library/CloudStorage/OneDrive-OklahomaAandMSystem/Academia/Codes/RainyDay_SST/Testing_RainyDay_GPU/RainyDay/Examples/CONUS_Benchmark/Results",
+    "MAINPATH": "/path/to/RainyDay_fast/Examples/CONUS_Benchmark/Results",
     "SCENARIONAME": "CONUS_bench",
-    "RAINPATH": "/Users/gjperezm/Databases/AORC_RainyDay/data/AORC.*.preciptemp.nc",
+    "RAINPATH": "/path/to/AORC_RainyDay/data/AORC.*.preciptemp.nc",
     "CATALOGNAME": "CONUS_bench.nc",
     "CREATECATALOG": "true",
     "DURATION": 72,
@@ -12,7 +12,7 @@
     "CALCTYPE": "pds",
     "TIMESEPARATION": 24,
     "DOMAINTYPE": "irregular",
-    "DOMAINSHP": "/Users/gjperezm/Library/CloudStorage/OneDrive-OklahomaAandMSystem/Academia/Codes/RainyDay_SST/Testing_RainyDay_GPU/RainyDay/Examples/CONUS_Benchmark/Shapefiles/CONUS_domain.shp",
+    "DOMAINSHP": "/path/to/RainyDay_fast/Examples/CONUS_Benchmark/Shapefiles/CONUS_domain.shp",
     "DIAGNOSTICPLOTS": "false",
     "FREQANALYSIS": "false",
     "NREALIZATIONS": 20,
@@ -25,7 +25,7 @@
     "RETURNTHRESHOLD": 2,
     "SCENARIOS": "false",
     "POINTAREA": "watershed",
-    "WATERSHEDSHP": "/Users/gjperezm/Library/CloudStorage/OneDrive-OklahomaAandMSystem/Academia/Codes/RainyDay_SST/Testing_RainyDay_GPU/RainyDay/Examples/Talequah/Shapefiles/Talequah_basin.shp",
+    "WATERSHEDSHP": "/path/to/RainyDay_fast/Examples/Talequah/Shapefiles/Talequah_basin.shp",
     "VARIABLES": {
         "precip": "RAINRATE",
         "latname": "latitude",

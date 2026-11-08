@@ -4,7 +4,7 @@ GP 2026-10-22: RainyDay_fast acceptance check: a test variant must reproduce a r
     python tools/compare_dumps.py <ref_variant> <test_variant> [name ...] [--catalogs] [--csv-ref DIR]
 
 For every shape (default: every dump folder of the reference) under $FAST_TEST_ROOT
-(default /Users/gjperezm/Databases/RainyDay_fast_tests):
+(default ~/Databases/RainyDay_fast_tests):
   1. dumps/<ref>/<name>/*_whichrain.npy vs dumps/<test>/<name>/: same files, np.array_equal (raw transposed depths
      of every duration, before ranking; written with RAINYDAY_DUMP_WHICHRAIN)
   2. runs/<ref>/<set>/<name>_<d>/<name>_<d>_FreqAnalysis.csv vs the test run: byte-identical
@@ -27,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(os.environ.get("FAST_TEST_ROOT", "/Users/gjperezm/Databases/RainyDay_fast_tests"))
+ROOT = Path(os.environ.get("FAST_TEST_ROOT", str(Path.home() / "Databases" / "RainyDay_fast_tests")))
 TOOLS = Path(__file__).resolve().parent
 
 

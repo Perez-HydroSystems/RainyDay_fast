@@ -1,13 +1,8 @@
 # Correcting the RainyDay-format AORC files (aorcfix2)
 
-These instructions rebuild, on your own Mac, the corrected AORC folder that our RainyDay_fast runs use
-(`data_aorcfix2`). The result is the same as ours, value for value. They are written for you and for Claude Code: every
-step has the exact command, what you should see, and when to stop.
-
-To hand the job to Claude Code (VS Code), open the RainyDay_fast folder and type:
-
-> Read `tools/aorc_fix/AORC_FIX_INSTRUCTIONS.md` and follow it step by step. My raw AORC folder is `<path>` and the
-> corrected folders should go in `<path>`. Stop and tell me if any check fails.
+These instructions build a corrected copy of the RainyDay-format AORC files (`data_aorcfix2`), the input used for
+RainyDay_fast runs with AORC. The result is identical, value for value, to the reference build in `reference/`. Every
+step gives the exact command, the expected output, and the condition under which to stop.
 
 **What you need:** macOS, the RainyDay-format AORC daily files `AORC.YYYYMMDD.preciptemp.nc` for 2002–2023 (from
 `web.s3.wisc.edu/aorc`), at least **160 GB free** on the disk that will hold the corrected folder, an internet
@@ -54,12 +49,12 @@ data_aorcfix2_no_aug2017/    step 4 (optional): links to data_aorcfix2/ and data
 Step 1 must run before step 2: step 2 takes days 20110722 and 20220529 from `data_aorcfix/`. Without them it silently
 loses fixes 3 and 4.
 
-## 3. Rules for Claude Code
+## 3. Rules
 
 1. Never write into, rename or delete anything in the original AORC folder.
 2. Never delete files or folders. If something must be redone, move it aside (e.g. `mv data_aorcfix2 data_aorcfix2_old`).
 3. Do not edit the scripts in `tools/aorc_fix/`. Their checksums are part of the check (step 0.3). If a step fails,
-   stop and report the full error.
+   stop and keep the full error message.
 4. Run the commands exactly as written, in order, and stop at every **STOP IF** line that applies.
 5. Save the output of every step in `$AORC_ROOT/aorcfix_logs/` (the commands below do it with `tee`).
 6. Run the test of step 2a before the full run of step 2b.
@@ -119,7 +114,8 @@ STOP IF an md5 differs, the file count is not 8035, or the grid is not 885 × 17
 python $FIX/check_defects.py $SRC
 ```
 
-If some lines print `False`, your copy differs from ours; note which, and continue only after telling GP.
+If some lines print `False`, your copy differs from the reference files (for example, it was already corrected);
+note which, and do not continue until you know why.
 
 ### Step 1. Interpolate the two corrupt hours (`data_aorcfix`, about 1 min)
 
@@ -182,7 +178,7 @@ diff <(cut -f1,3 $DST/_aorcfix2_manifest.tsv) <(cut -f1,3 $FIX/reference/aorcfix
     && echo "MANIFEST IDENTICAL TO REFERENCE"
 ```
 
-Expected: the same lines as our reference, `$FIX/reference/check_aorcfix2_reference.log`:
+Expected: the same lines as the reference, `$FIX/reference/check_aorcfix2_reference.log`:
 
 ```
 PASS  C1 completeness  0 source files without an entry in dst
@@ -198,11 +194,11 @@ ALL PASS
 ```
 
 and then `MANIFEST IDENTICAL TO REFERENCE`. The manifest's third column is a checksum of the patched rain values of
-each of the 6,942 files; it is the same on every machine (our Mac and Ubuntu builds matched 6942/6942). The second
+each of the 6,942 files; it is the same on every machine (macOS and Ubuntu builds matched 6942/6942). The second
 column, a checksum of the whole file, depends on the HDF5 library and may differ; that is expected.
 
-STOP IF any line is FAIL or `diff` prints lines. A `diff` line names a day whose patched rain differs from ours:
-report the days, and check that the original file of that day is the same as GP's.
+STOP IF any line is FAIL or `diff` prints lines. A `diff` line names a day whose patched rain differs from the reference:
+note the days, and check the original files of those days (for example, against a fresh download).
 
 ### Step 4 (optional). View without August 2017 (runs without Hurricane Harvey)
 
@@ -245,12 +241,12 @@ find $DST -maxdepth 1 -type f -name 'AORC.*' | wc -l    # ... of which 6942 are 
 |---|---|
 | S3 errors, timeouts or a hang while downloading | Ctrl-C and rerun the same command (step 2b is resumable). Check that `python -c "import s3fs; print(s3fs.S3FileSystem(anon=True).ls('noaa-nws-aorc-v1-1-1km')[:3])"` lists the bucket. A VPN or a campus proxy can block AWS. |
 | `Only ... GB free` | Free space on the disk of `$AORC_ROOT` or choose another disk. Do not lower `--min-free-gb`: the result needs about 130 GB. |
-| `AssertionError` about latitude or longitude | Your files are not on the RainyDay 1/30° AORC grid (885 × 1770). Stop and report. |
+| `AssertionError` about latitude or longitude | Your files are not on the RainyDay 1/30° AORC grid (885 × 1770). Stop. |
 | `zarr` errors such as `S3Map` not found | zarr 3 was installed. Recreate the env from `aorcfix_env.yml`. |
 | `readlink: illegal option -- f` | macOS before 12.3; the script falls back to python3 automatically. |
 | Broken links (`No such file` when RainyDay opens a file) | The original folder was moved or renamed. Move it back, or build the views again into new folders. |
 | Very slow disk, Spotlight busy | Exclude `$AORC_ROOT` from Spotlight (System Settings > Siri & Spotlight > Spotlight Privacy) and from Time Machine. |
-| The 4 defect lines of step 0.4 do not all print `True` | Your copy is not the one we fixed. Tell GP before continuing. |
+| The 4 defect lines of step 0.4 do not all print `True` | Your copy differs from the reference files. Find out why before continuing. |
 
 ## 7. Files in this folder
 
@@ -262,8 +258,8 @@ find $DST -maxdepth 1 -type f -name 'AORC.*' | wc -l    # ... of which 6942 are 
 | `check_defects.py` | Steps 0.4 and 5: quick test of a folder for the four defects |
 | `make_noaug_view.sh` | Step 4: the view without August 2017 |
 | `aorcfix_env.yml` | conda env `aorcfix` (Python 3.10, zarr 2.18.3, s3fs, xarray, netCDF4) |
-| `reference/aorcfix2_manifest_reference.tsv` | Our manifest (name, file md5, rain-data md5) for the 6,942 patched files |
-| `reference/check_aorcfix2_reference.log` | Our output of step 3 |
+| `reference/aorcfix2_manifest_reference.tsv` | The reference manifest (name, file md5, rain-data md5) for the 6,942 patched files |
+| `reference/check_aorcfix2_reference.log` | The reference output of step 3 |
 
-Scripts by Gabriel Perez (October 2026), first used for the Basin-IDF study; they were run on macOS and Ubuntu with
+Scripts by Gabriel Perez (October 2026), first used in a research study; they were run on macOS and Ubuntu with
 identical patched data.

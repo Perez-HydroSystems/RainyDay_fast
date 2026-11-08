@@ -36,7 +36,7 @@ from scipy.stats import binom
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Source"))
 import RainyDay_utilities_Py3.RainyDay_functions as RDF   # noqa: E402
 
-ROOT = Path(os.environ.get("FAST_TEST_ROOT", "/Users/gjperezm/Databases/RainyDay_fast_tests"))
+ROOT = Path(os.environ.get("FAST_TEST_ROOT", str(Path.home() / "Databases" / "RainyDay_fast_tests")))
 PROBS = (5., 25., 50., 75., 95.)
 MISSING = -9999.
 

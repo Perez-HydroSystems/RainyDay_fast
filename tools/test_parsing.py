@@ -26,7 +26,7 @@ try/except around them). Each test documents the old behaviour (asserted on OLD_
   NSTORMS absent, existing catalog:    -> old NameError (nstorms, then nstorms_default)  new nstorms = catalog count
   RETURNLEVELS "2,5,10":                 -> old SystemExit                            new the same float32 array as
       the JSON list [2, 5, 10]
-  Paper configuration (and the Talequah / matrix JSONs, and a battery of valid inputs): every parsed object identical
+  Production configuration (and the Talequah / matrix JSONs, and a battery of valid inputs): every parsed object identical
   to the old code's, including container and element types.
 """
 import io
@@ -470,7 +470,7 @@ def test_existing_catalog_months():
     gn, _ = run_filter("new", base, em, [2002], nstorms=base["n"])
     report(all(same(go[k], gn[k]) for k in ("stormlist", "catmax", "catx", "caty", "cattime", "modstormsno", "nstorms"))
            and aligned(gn, base), "[existing-catalog months] with INCLUDEYEARS [2002]: new == old (already aligned)")
-    # no exclusion at all (paper configuration on an existing catalog): new == old
+    # no exclusion at all (production configuration on an existing catalog): new == old
     go, _ = run_filter("old", base, [], False, nstorms=base["n"] - 2)
     gn, _ = run_filter("new", base, [], False, nstorms=base["n"] - 2)
     report(all(same(go[k], gn[k]) for k in ("stormlist", "catmax", "catx", "caty", "cattime", "modstormsno", "nstorms")),
@@ -573,12 +573,12 @@ def test_numeric_uncertainty():
 
 
 def test_required_keys():
-    paper = paper_config()
+    prod = production_config()
     g, e = run("try:\n    wd=cardinfo['MAINPATH']\nexcept ImportError:\n    sys.exit('x')\n", cardinfo={})
     report(isinstance(e, KeyError), "[required keys] old: missing MAINPATH -> %r (traceback)" % (e,))
     for drop in ("MAINPATH", "SCENARIONAME", "CATALOGNAME", "CREATECATALOG", "DURATION", "VARIABLES", "POINTAREA",
                  "RAINPATH", "WATERSHEDSHP"):
-        c = dict(paper)
+        c = dict(prod)
         del c[drop]
         try:
             FPA.check_required(c)
@@ -586,18 +586,18 @@ def test_required_keys():
         except SystemExit as ex:
             r = ex
         report(is_exit(r, drop + ":"), "[required keys] new: missing %s -> stops naming it" % drop)
-    c = dict(paper, DOMAINTYPE="rectangular")
+    c = dict(prod, DOMAINTYPE="rectangular")
     try:
         FPA.check_required(c)
         r = None
     except SystemExit as ex:
         r = ex
     report(is_exit(r, "AREA_EXTENT:"), "[required keys] new: DOMAINTYPE rectangular + CREATECATALOG true without AREA_EXTENT -> stops")
-    c = dict(paper, CREATECATALOG="false")
+    c = dict(prod, CREATECATALOG="false")
     del c["RAINPATH"]
     FPA.check_required(c)
     report(True, "[required keys] new: RAINPATH not required with CREATECATALOG false")
-    c = {k: v for k, v in paper.items() if k not in ("MAINPATH", "DURATION")}
+    c = {k: v for k, v in prod.items() if k not in ("MAINPATH", "DURATION")}
     try:
         FPA.check_required(c)
         r = None
@@ -623,8 +623,8 @@ def test_returnlevels_string():
 # ---------------------------------------------------------------------------------------------------------------------
 # identical objects for the configurations that already worked
 # ---------------------------------------------------------------------------------------------------------------------
-def paper_config():
-    """the parsing-relevant keys of the paper / validation-matrix JSONs (jsons/ref/*.json)"""
+def production_config():
+    """the parsing-relevant keys of the production / validation-matrix JSONs (jsons/ref/*.json)"""
     return {"MAINPATH": "/x", "SCENARIONAME": "Basin", "RAINPATH": "/d/AORC.*.preciptemp.nc", "CATALOGNAME": "Basin.nc",
             "CREATECATALOG": "true", "DURATION": 72, "DURATIONCORRECTION": "false", "NSTORMS": 400, "NYEARS": 1000,
             "CALCTYPE": "PDS", "NREALIZATIONS": 100, "UNCERTAINTY": "all_realizations", "TIMESEPARATION": 24,
@@ -660,19 +660,19 @@ def compare_config(card, label):
 
 
 def test_identical_configs():
-    paper = paper_config()
-    compare_config(paper, "paper configuration")
-    em, iy = FPA.parse_excludemonths(paper), FPA.parse_includeyears(paper)
+    prod = production_config()
+    compare_config(prod, "production configuration")
+    em, iy = FPA.parse_excludemonths(prod), FPA.parse_includeyears(prod)
     report(em == [] and type(iy) is list and iy == list(range(2002, 2024)) and all(type(y) is int for y in iy),
-           "paper: EXCLUDEMONTHS [] and INCLUDEYEARS = Python ints 2002..2023 (as before)")
+           "production: EXCLUDEMONTHS [] and INCLUDEYEARS = Python ints 2002..2023 (as before)")
     try:
-        FPA.check_required(paper)
+        FPA.check_required(prod)
         ok = True
     except SystemExit:
         ok = False
-    report(ok, "paper configuration passes the required-key check")
+    report(ok, "production configuration passes the required-key check")
     compare_config(talequah_config(), "Talequah example")
-    root = Path(os.environ.get("FAST_TEST_ROOT", "/Users/gjperezm/Databases/RainyDay_fast_tests")) / "jsons" / "ref"
+    root = Path(os.environ.get("FAST_TEST_ROOT", str(Path.home() / "Databases" / "RainyDay_fast_tests"))) / "jsons" / "ref"
     for f in sorted(root.glob("*.json")) if root.is_dir() else []:     # optional: the matrix JSONs, when present
         card = json.load(open(f))
         compare_config(card, "matrix JSON " + f.name)

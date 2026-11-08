@@ -39,7 +39,7 @@ Per duration x return period (the rows both runs share):
             with the jackknife SE of delta)
   combined: every Monte Carlo draw plus an independent record deviation (record draw j uniform,
             np.random.default_rng(seed + 1000 + d))
-  classes (the paper's rule, margin m, level L = 90 -> alpha = 0.05):
+  classes (the classification rule, margin m, level L = 90 -> alpha = 0.05):
             equivalent   the L % CI of the combined draws is inside (-m, +m)            (TOST at alpha)
             increase / decrease   the (100 - 100 alpha) % CI (95 %) is beyond +m / -m   (minimum-effect test at alpha;
                          with --bh: Benjamini-Hochberg q <= alpha over all rows instead)
