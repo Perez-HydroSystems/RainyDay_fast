@@ -146,7 +146,7 @@ FreqAnalysis CSVs. No `np.random` call was added, removed or moved. Any differen
   storm, so a crop can be moved to another folder or machine.
 - **`tools/materialize_catalog.py`.** Converts a light catalog to a full one (bit-identical), for scenarios, sharing
   or archiving.
-- **README guide.** "Using RainyDay_fast for a new domain or dataset".
+- **README guide.** `README_DETAILED.md`, section 6 (cropped input) and section 5 (light catalogs).
 
 ### B5. Validation and profiling tools (all in `tools/` unless noted)
 - **`make_test_jsons.py`, `run_matrix.sh`, `compare_dumps.py`.** The validation matrix against RainyDay_mod:
@@ -802,5 +802,5 @@ Rows marked † were added in the docs review (2026-10-26).
 | `RAINYDAY_VERIFY_SEED` † | env | seed of the verify-mode sample (`default_rng`, B3) | 20261022 |
 | `RAINYDAY_TABLE_WORKERS` † | env | `scipy.fft` workers of the table engine (B3) | 1 |
 
-More detail: `README.md` (usage), `CLAUDE.md` (rules, correctness model, harness, benchmarks) and the `GP` comments in
+More detail: `README_DETAILED.md` (usage), `CLAUDE.md` (rules, correctness model, harness, benchmarks) and the `GP` comments in
 the code.
