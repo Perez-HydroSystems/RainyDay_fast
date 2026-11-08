@@ -6,8 +6,8 @@ Wisconsin–Madison).
 
 - **Starting point:** the original RainyDay at commit
   [`b14a011`](https://github.com/HydroclimateExtremesGroup/RainyDay/commit/b14a011) (17 April 2025).
-- **Modifications:** by Gabriel Perez (Perez-HydroSystems). This is an independent research version, not the official
-  RainyDay release.
+- **Modifications:** by Gabriel Perez (Perez-HydroSystems). Some of them may be integrated into RainyDay over time;
+  for the current version of RainyDay, see the [RainyDay repository](https://github.com/HydroclimateExtremesGroup/RainyDay).
 
 **The complete description is in [`README_DETAILED.md`](README_DETAILED.md).**
 

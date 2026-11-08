@@ -9,8 +9,8 @@ stochastic storm transposition (SST) framework developed by Daniel B. Wright and
 - **Base:** the original RainyDay was taken from commit
   [`b14a011`](https://github.com/HydroclimateExtremesGroup/RainyDay/commit/b14a011) (17 April 2025). Everything described
   here is a change from that commit. Changes made upstream after it are **not** included.
-- **Status:** an independent research version. It is not the official RainyDay release and is not maintained by the
-  original developers. For the official code, use the upstream repository.
+- **Relation to RainyDay:** some of these changes may be integrated into RainyDay over time. For the current version
+  of RainyDay, see the [RainyDay repository](https://github.com/HydroclimateExtremesGroup/RainyDay).
 - **How the code is marked:** every change carries a `GP YYYY-MM-DD` comment, with the previous code kept as a comment
   next to it. [`README_CHANGES.md`](README_CHANGES.md) records every change, why it was made, its effect on results and
   its commit.
