@@ -235,7 +235,7 @@ find $DST -maxdepth 1 -type f -name 'AORC.*' | wc -l    # ... of which 6942 are 
    conda activate RainyDay_Env
    python tools/make_domain_crop.py --json RUN.json --dst <AORC_ROOT>/crops/<domain>_aorcfix2 --verify
    ```
-   and run with the `RUN_crop.json` it writes ([README](../../README.md), "Using RainyDay_fast for a new domain").
+   and run with the `RUN_crop.json` it writes ([README_DETAILED.md](../../README_DETAILED.md#6-cropped-compressed-input-files-toolsmake_domain_croppy), section 6).
 3. Rebuild storm catalogs. Never reuse crops or catalogs made from the original files. A light catalog built on other
    data stops with "doesn't match the catalog (CRC32): wrong or changed input data": that means mixed data, not a bug.
 
