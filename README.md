@@ -32,12 +32,13 @@ Wisconsin–Madison).
    domain and stored with lossless compression, so each run reads small files.
 7. **Parallel catalog search** (`COMPUTE`). The search for storms uses all CPU cores (or a GPU) instead of one core.
 
-Together, options 4–7 made a full run for a 16,000 km² basin 21–31× faster, with every output identical.
+These options were designed for thousands of simulations with several storm durations and large basins (e.g.
+16,000 km²); for such a basin a full run is about 20× faster, with every output identical.
 
-**Are the results the same as the original RainyDay?** The faster options (4–7) give identical results, and options
-1–3 only add outputs. Some corrections made along the way do change results, mainly the rule that a transposed basin
-must lie entirely inside the domain. They are listed in
-[`README_DETAILED.md`](README_DETAILED.md#changes-that-affect-results).
+**Compatibility with RainyDay.** Options 1–3 add outputs and options 4–7 reproduce the same results. A few documented
+differences in how transposition locations are selected, mainly that a transposed basin lies entirely inside the
+domain, can change results in some configurations
+([`README_DETAILED.md`](README_DETAILED.md#changes-that-affect-results)).
 
 ## Quick start
 
