@@ -1956,8 +1956,12 @@ if DoDiagnostics:
                 # diagnostic overlay should use the same reference point.
                 xorig_trans = lonrange[xmin]+(maskwidth/2)*rainprop.spatialres[0]
                 yorig_trans = latrange[ymin]+(maskheight/2)*rainprop.spatialres[1]
-                Delta_x = xnew_trans - xorig_trans
-                Delta_y = ynew_trans - yorig_trans
+                # float() is load-bearing: lonrange/latrange are xarray objects, so these deltas would be
+                # 0-d DataArrays, and shapely's translate hands a*x + b*y + xoff to xarray's
+                # __array_ufunc__, which raises "unexpected number of dimensions". (Ported from the
+                # Perez-HydroSystems/RainyDay fork, commit 6d191e6.)
+                Delta_x = float(xnew_trans - xorig_trans)
+                Delta_y = float(ynew_trans - yorig_trans)
                 # % Compute the centroid of the first geometry
                 # % original_centroid = original_geometries[0].centroid
                 # % Compute translation distances

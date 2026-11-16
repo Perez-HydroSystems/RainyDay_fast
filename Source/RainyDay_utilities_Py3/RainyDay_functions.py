@@ -1257,7 +1257,11 @@ def DistributionBuilderFast(intenserain,tempmax,xlen,ylen,checksep):
 #    return rainsum
 
 
-@jit(fastmath=True)
+# NOTE: intentionally NOT @jit-compiled (ported from the Perez-HydroSystems/RainyDay fork, commit
+# 92d82a4; upstream RainyDay main does the same). Under modern numba (nopython) `exprain` is 3d in the
+# durcheck==False branch and 2d in the else branch, and numba cannot unify the two shapes. SSTalt is on
+# the resampling / scenario-writing path, not the accelerated catalog scan.
+#@jit(fastmath=True)
 def SSTalt(passrain,sstx,ssty,trimmask,maskheight,maskwidth,intensemean=None,intensestd=None,intensecorr=None,homemean=None,homestd=None,durcheck=False):
     maxmultiplier=1.5
     rainsum=np.zeros((len(sstx)),dtype='float32')
