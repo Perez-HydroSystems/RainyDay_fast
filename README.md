@@ -65,6 +65,8 @@ To use the new options, add them to the run's JSON file, for example:
 - [`UserGuide/RainyDay_fast_tutorial.ipynb`](UserGuide/RainyDay_fast_tutorial.ipynb): the RainyDay_fast User's Guide,
   with worked examples.
 - [`README_CHANGES.md`](README_CHANGES.md): the change log, with every change, its reason and its effect on results.
+- [`tools/aorc_download/AORC_DOWNLOAD_INSTRUCTIONS.md`](tools/aorc_download/AORC_DOWNLOAD_INSTRUCTIONS.md): how to
+  get the AORC rainfall files in RainyDay format: download 1979–2023, and build 2024–2025 from NOAA AORC v1.1.
 - [`tools/aorc_fix/AORC_FIX_INSTRUCTIONS.md`](tools/aorc_fix/AORC_FIX_INSTRUCTIONS.md): how to correct four known
   defects in the RainyDay-format AORC rainfall files.
 

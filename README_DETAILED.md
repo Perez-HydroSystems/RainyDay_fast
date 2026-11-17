@@ -300,6 +300,7 @@ results relative to the original RainyDay (`b14a011`). They are always on:
 | [`UserGuide/RainyDay_Tutorial.ipynb`](UserGuide/RainyDay_Tutorial.ipynb) | The original RainyDay User's Guide: the SST method and every control-file setting. It still applies, except where the guide below says otherwise. |
 | [`UserGuide/RainyDay_fast_tutorial.ipynb`](UserGuide/RainyDay_fast_tutorial.ipynb) | The RainyDay_fast User's Guide: every new or changed setting, the seven modifications in detail, two worked case studies, validation, corrected bugs and known issues. |
 | [`README_CHANGES.md`](README_CHANGES.md) | Every change with respect to the original RainyDay: what, why, effect on results, commit, and a reference of all new settings (section D). |
+| [`tools/aorc_download/AORC_DOWNLOAD_INSTRUCTIONS.md`](tools/aorc_download/AORC_DOWNLOAD_INSTRUCTIONS.md) | Where the RainyDay-format AORC rainfall files come from and how to get them: the ready-made files of 1979–2023 are downloaded, and the files of 2024–2025 are built from NOAA AORC v1.1 with the scripts of that folder, with checks. It also lists the known problems of the 2024–2025 data. |
 | [`tools/aorc_fix/AORC_FIX_INSTRUCTIONS.md`](tools/aorc_fix/AORC_FIX_INSTRUCTIONS.md) | The RainyDay-format AORC files have four known data defects (for example, hour 23:00 UTC is a copy of 22:00 in 2002–2020). These scripts build a corrected copy from NOAA AORC v1.1, step by step, with checks. |
 
 ## How to cite
