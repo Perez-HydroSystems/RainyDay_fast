@@ -728,6 +728,30 @@ Limits).
 
 ---
 
+### B11. Dimensionless SST for watersheds, `ENHANCEDSST: "dimensionless"` (GP 2026-11-18)
+
+Port of the watershed path of RainyDay (HydroclimateExtremesGroup/RainyDay, commit `ff2b809`, 2026-09-28:
+`SSTalt_normalized`, `read_quantilefile`, `Normalized_SST_write`), after Nathan et al. (2016). Before this change
+the mode did nothing for a watershed here (the transposition loop had no branch for it).
+
+- A transposed storm is multiplied, pixel by pixel, by `reference(home pixel) / reference(origin pixel)`, where
+  `reference` is a rainfall climatology on the catalog grid. Storms from places with less extreme rain than the
+  watershed are scaled up, storms from wetter places scaled down. The same multiplier is applied to the basin
+  rainfall of the frequency analysis and to the scenario files.
+- Code: `Source/RainyDay_utilities_Py3/fast_dimless.py` (kernel, reference reader, scenario multiplier), three
+  hooks in `RainyDay_Py3.py` and an optional `multiplier` argument of `writescenariofile`.
+- `RAINDISTRIBUTIONFILE` may be: RainyDay's annual-maxima file (`precrate(year, duration, latitude, longitude)` on
+  the catalog grid; the reference is the empirical quantile of `DIMENSIONLESSRETURNPERIOD`, default 10 as RainyDay
+  hard-codes); a 2-d field `reference(latitude, longitude)` in a `.nc`; or an ArcASCII grid such as the NOAA
+  Atlas 14 GIS grids. The last two are regridded bilinearly and are additions (RainyDay wires `.asc` files to the
+  point modes only).
+- `whichmultiplier` holds the effective multiplier of the basin rainfall (rescaled / unrescaled sum).
+- Not available with `ROTATIONANGLE`, `MULTIPLEDURATIONS`, `FREQENGINE: "exact"` or `RECORDCI`. Point modes are
+  unchanged. `stochastic` and `deterministic` are unchanged (not ported; RainyDay's own reader for them exits).
+- Checks: `tests/test_dimless.py` (kernel against a transcription of `SSTalt_normalized`; a flat reference gives
+  multiplier 1); with a flat reference the Tahlequah frequency table is identical to the run without rescaling.
+- No effect unless `ENHANCEDSST` is `"dimensionless"`.
+
 ## C. Which changes alter results relative to the original RainyDay
 - **Change results:**
   - A9, strict transposition, wherever basins reached the domain edge;
@@ -795,6 +819,8 @@ Limits).
 | `RECORDSEED` | JSON | seed of the record generator (`np.random.default_rng`) | 20261026 |
 | `RECORDBLOCK` | JSON | years per moving block (1 = independent years) | 1 |
 | `RECORDSAVE` | JSON | `"true"`: also `_RecordBootstrap.csv`, `_RecordBootstrapMedian.csv` (B10), `_RecordDraws.csv` (and `_RecordBootstrapLevel.csv` with FREQENGINE on); `"false"`: `_RecordCI.csv` only | `"true"` |
+| `ENHANCEDSST` | JSON | `"dimensionless"` for a watershed, with `RAINDISTRIBUTIONFILE` (B11) | off |
+| `DIMENSIONLESSRETURNPERIOD` | JSON | return period of the reference when `RAINDISTRIBUTIONFILE` holds annual maxima (B11) | 10 |
 | `FREQENGINE` | JSON | `"montecarlo"`, `"exact"` (no realizations, no draws), `"both"` (B8) | `"montecarlo"` |
 | `RAINYDAY_DUMP_EXACTPOOL` | env | folder for the exact engine's pool of every duration (`<name>_exactpool.npz`, for `tools/verify_exact_engine.py`; B8) | off |
 | `RAINYDAY_CATALOG_ENGINE` | env | `batchfft`, `batchfft_mp`, `fft_perstep`, `batchtf`, `batchcuda` | auto: `batchfft_mp` with `fork` and ≥ 4 cores, else `batchcuda` with CuPy and a CUDA device, else `batchfft` |
