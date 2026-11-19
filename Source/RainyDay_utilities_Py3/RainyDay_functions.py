@@ -2633,10 +2633,12 @@ def delete_files_in_directory(directory_path):
 # =============================================================================
 # added DBW 08142023: writing single storm scenario file using xarray
 # =============================================================================
-def writescenariofile(catrain,raintime,rainlocx,rainlocy,name_scenariofile,tstorm,tyear,trealization,maskheight,maskwidth,subrangelat,subrangelon,scenarioname,mask):
+def writescenariofile(catrain,raintime,rainlocx,rainlocy,name_scenariofile,tstorm,tyear,trealization,maskheight,maskwidth,subrangelat,subrangelon,scenarioname,mask,multiplier=None):
     # the following line extracts only the transposed rainfall within the area of interest
     #transposedrain=np.multiply(catrain[:,rainlocy[0] : (rainlocy[0]+maskheight), rainlocx[0] : (rainlocx[0]+maskwidth)],mask)
     transposedrain=catrain[:,rainlocy[0] : (rainlocy[0]+maskheight), rainlocx[0] : (rainlocx[0]+maskwidth)]
+    if multiplier is not None:        # GP 2026-11-18: ENHANCEDSST "dimensionless" (fast_dimless.py): pixel multiplier
+        transposedrain=transposedrain*multiplier
     
     description_string='RainyDay storm scenario file for original storm '+str(tstorm)+', year '+str(tyear)+', realization '+str(trealization)+', created from ' + scenarioname
     latitudes_units,longitudes_units = 'degrees_north', 'degrees_east'

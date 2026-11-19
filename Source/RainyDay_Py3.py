@@ -59,6 +59,7 @@ import RainyDay_utilities_Py3.fast_prof as FP        # GP 2026-10-22: RAINYDAY_T
 import RainyDay_utilities_Py3.fast_io as FIO          # GP 2026-10-22: CATALOGSTORAGE "light" (light storm catalog)
 import RainyDay_utilities_Py3.fast_sst as FST        # GP 2026-10-22: MULTIDURATIONENGINE "table" (RainyDay_fast fix 3)
 import RainyDay_utilities_Py3.fast_record as FR      # GP 2026-10-26: RECORDCI, record (sampling) uncertainty (adds outputs only)
+import RainyDay_utilities_Py3.fast_dimless as FDL    # GP 2026-11-18: ENHANCEDSST "dimensionless" for a watershed (port of RainyDay ff2b809)
 import RainyDay_utilities_Py3.fast_parse as FPA      # GP 2026-10-26: parsing fixes, README_CHANGES B9 (one-line hooks below)
 
 import warnings
@@ -446,6 +447,9 @@ try:
                 sys.exit("The precipitation file specified in 'RAINDISTRIBUTIONFILE' cannot be found!")
         except IndexError:
             sys.exit("Even though you 'dimensionless SST', you didn't specify the file of precipitation distributions!")
+        # GP 2026-11-18: return period of the reference quantile when RAINDISTRIBUTIONFILE holds annual maxima
+        # (RainyDay hard-codes 10); not used for a ready-made reference field (.asc, or .nc with `reference`)
+        dimless_returnperiod=float(cardinfo.get("DIMENSIONLESSRETURNPERIOD",10.))
     else:
         print("No rescaling will be performed!")
 except Exception:
@@ -2538,7 +2542,16 @@ if FreqAnalysis:
         
     elif rescaletype=='dimensionless':
         print("reading in precipitation map for dimensionless SST...")
-        if '.nc' in rescalingfile:
+        # GP 2026-11-18: watershed (and box) areas: port of the RainyDay path (fast_dimless.py); the reference field in
+        # logs on the catalog grid (intensegrid) and its part under the basin box (homegrid)
+        if areatype.lower()!='pointlist' and areatype.lower()!='point':
+            if rotation:
+                sys.exit("ENHANCEDSST 'dimensionless' is not available with ROTATIONANGLE")
+            intensegrid,homegrid=FDL.prepare(rescalingfile,duration,latrange,lonrange,catmask,domainmask,returnperiod=dimless_returnperiod)
+            print("dimensionless SST: reference at the watershed %.1f (geometric mean); over the domain %.1f to %.1f; multipliers of whole-basin transpositions range about %.2f to %.2f"
+                  % (np.exp(homegrid.mean()),np.exp(intensegrid[domainmask>0].min()),np.exp(intensegrid[domainmask>0].max()),
+                     np.exp(homegrid.mean()-intensegrid[domainmask>0].max()),np.exp(homegrid.mean()-intensegrid[domainmask>0].min())))
+        elif '.nc' in rescalingfile:
             sys.exit('need to set this up')
             #intenserain,_,intenselat,intenselon=RainyDay.readintensityfile(rescalingfile)
         elif '.asc' in rescalingfile:
@@ -2742,6 +2755,11 @@ if FreqAnalysis:
                 elif rescaletype=='deterministic' and areatype.lower()!='pointlist' and areatype.lower()!='point':
                     temprain,whichmultiplier[whichstorms==i,pt],whichstep=RainyDay.SSTalt(passrain,whichx[whichstorms==i,pt],whichy[whichstorms==i,pt],trimmask,maskheight,maskwidth,intensemean=intensemean,homemean=homemean,durcheck=durcorrection)
                     whichrain[whichstorms==i,pt]=temprain*rainprop.timeres/60./mnorm 
+                # GP 2026-11-18: dimensionless SST for a watershed (fast_dimless.py; RainyDay's SSTalt_normalized).
+                # whichmultiplier holds the effective multiplier of the basin rainfall (rescaled / unrescaled sum).
+                elif rescaletype=='dimensionless' and areatype.lower()!='pointlist' and areatype.lower()!='point':
+                    temprain,whichmultiplier[wsel+(pt,)],whichstep[wsel+(pt,)]=FDL.sst_dimensionless(passrain,whichx[wsel+(pt,)],whichy[wsel+(pt,)],trimmask,maskheight,maskwidth,intensegrid,homegrid,durcheck=durcorrection)
+                    whichrain[wsel+(pt,)]=temprain*rainprop.timeres/60./mnorm
                 elif areatype.lower()!='pointlist' and areatype.lower()!='point' and rescaletype=='none':
                     if durcorrection and mdengine=='fast':
                         # GP 2026-10-21: single duration-corrected run with the compiled kernel (one duration),
@@ -3419,7 +3437,9 @@ if FreqAnalysis:
                     
                     name_scenariofile=fullpath+'/Realizations/realization'+str(trealization[0]+1)+'/scenario_'+scenarioname+'_rlz'+str(trealization[0]+1)+'year'+str(tyear[0]+1)+'storm'+str(tstorm[0]+1)+'.nc'
                     #outrain=RainyDay.SSTspin_write_v2(catrain,np.squeeze(writex[:,rlz]),np.squeeze(writey[:,rlz]),np.squeeze(writestorm[:,rlz]),nanmask,maskheight,maskwidth,precat,cattime[:,-1],rainprop,spin=prependrain,flexspin=False,samptype=transpotype,cumkernel=cumkernel,rotation=rotation,domaintype=domain_type)
-                    RainyDay.writescenariofile(catrain,raintime,outx,outy,name_scenariofile,i,tyear[0],trealization[0],maskheight,maskwidth,subrangelat,subrangelon,scenarioname,writemask)
+                    # GP 2026-11-18: dimensionless SST: the scenario rain carries the same pixel multiplier as the frequency analysis
+                    outmult=FDL.box_multiplier(intensegrid,homegrid,int(outy[0]),int(outx[0])) if (rescaletype=='dimensionless' and areatype.lower() not in ('point','pointlist')) else None
+                    RainyDay.writescenariofile(catrain,raintime,outx,outy,name_scenariofile,i,tyear[0],trealization[0],maskheight,maskwidth,subrangelat,subrangelon,scenarioname,writemask,multiplier=outmult)
     
     
     
