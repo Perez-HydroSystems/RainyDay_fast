@@ -8,6 +8,10 @@ step gives the exact command, the expected output, and the condition under which
 `web.s3.wisc.edu/aorc`), at least **160 GB free** on the disk that will hold the corrected folder, an internet
 connection, and conda. **Time:** about 1.5 h in total, most of it downloading.
 
+**Do you still need the files, or the years after 2023?** See
+[`tools/aorc_download/AORC_DOWNLOAD_INSTRUCTIONS.md`](../aorc_download/AORC_DOWNLOAD_INSTRUCTIONS.md): it downloads
+the files of 1979–2023 and builds those of 2024–2025.
+
 ---
 
 ## 1. Why the files need fixing
